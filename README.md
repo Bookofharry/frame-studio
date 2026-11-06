@@ -21,6 +21,22 @@ The left library stays synchronized with the timeline. Each clip row shows its e
 
 Videos join automatically in timeline order. Drag clips to arrange them, or use the left/right arrows in the toolbar. **Add from library** also lets you select multiple existing videos in order. The selections append after the existing timeline and preserve your edits. **Play all** previews the complete sequence from the beginning. **Export** saves every clip as one MP4. A batch addition or drag operation can be undone in one step.
 
+## Discover music without uploading
+
+Open **Audio > Discover** to browse the bundled starter library. Search by title, instrument, or mood, filter by Emotional, Cinematic, Happy, Suspense, Nature, or Sound Effects, listen with **Preview**, and choose **+ Add** to place a sound at the playhead. The bundled media are served by the local app and work without an internet connection. **Project audio** contains only sources used or imported in the current project; **New** clears that list while the shared Discover catalog stays available.
+
+The collection includes five 60-second Kevin MacLeod music excerpts (CC BY 4.0), three park recordings by Thimras (CC0), and three synthesized Frame Studio effects (CC0). Tracks requiring attribution are labeled. For those tracks, download the credits text beside the completed MP4 and include it in the video description or credits. Credits refer to the exported snapshot, even if the project is edited during rendering. Original sources, license links, modifications, and checksums are recorded in public/audio-catalog/catalog.json and CREDITS.txt. Rebuild bundled assets with npm run catalog:rebuild; this maintainer command needs internet access.
+
+### Provider connections
+
+Open the gear icon beside **Discover / Project audio**.
+
+- **Epidemic Sound:** enter an API key from https://www.epidemicsound.com/tools/api/ and use **Verify & save**. The app checks the key before saving it. Search and HLS previews use the documented API. Development access is preview-only in Frame; adding or exporting requires a production agreement covering this editor's users and local MP4 downloads, recorded using its agreement reference. The app reports preview, download, and export events to the provider. Provider quotas and track download permissions still apply. This adapter is covered by mocked contract tests; live account access has not been tested without credentials.
+- Credentials are stored locally in the ignored data/audio-connections.json file, never returned by the status endpoint or saved in project JSON. Protect this folder as private app data. Alternatively set EPIDEMIC_API_KEY and EPIDEMIC_LICENSE_REFERENCE in the server environment; restart after changing them. Disconnect removes saved credentials and blocks new exports of associated paid tracks until the matching license is reconnected.
+- **Popular songs / Feed Clips:** onboarding information and links are provided. Playback and importing are not enabled: no partner account or approved agreement is available. Standard terms specify US-only access, clips up to 60 seconds, and restrictions on offline use and external sharing. This local editor needs a provider-approved agreement for its territories, downloadable MP4 workflow, storage, rights checks, reporting, and Content ID before that integration can be activated. This is not a free or working popular-song catalog.
+
+Provider sources: https://developers.epidemicsound.com/docs/api-reference/ and https://www.feed.fm/clips-terms-conditions . No credentials or subscriptions are included with Frame.
+
 ## Adding music and sound effects
 
 Open **Audio** in the left sidebar and click **Import audio**, or use **+ Add music** above the timeline. MP3, WAV, M4A, AAC, FLAC, and OGG files are supported. You can import music before or after adding videos. Files stay on this computer.
@@ -58,3 +74,5 @@ FFmpeg filter reference: https://ffmpeg.org/ffmpeg-filters.html
 
 Run `npm run test:music` after `npm test` for music import, drag/trim/volume controls, preview synchronization across video cuts and speed changes, project persistence, export, and mobile layout. Backend music tests decode exported samples and measure frequencies to verify source sound, music timing, trim, volume, mute, and the video end boundary.
 # opensourceVideoEditot
+
+Catalog checks: npm test covers bundled audio integrity, search, attribution, deduplicated imports, export credits, and provider credentials/licensing/reporting with mocked API responses. npm run test:catalog checks the browser discovery flow, real preview playback, addition/export/credits, connection states, and mobile layout.

@@ -7,12 +7,14 @@ const { spawn } = require('node:child_process');
 const ffmpeg = require('ffmpeg-static');
 const ffprobe = require('ffprobe-static').path;
 const cropGeometry = require('./public/crop');
+const { createCatalog } = require('./audio-catalog');
 
 const root = process.env.FRAME_DATA_DIR || path.join(__dirname, 'data');
 for (const dir of ['media', 'exports', 'temp']) fs.mkdirSync(path.join(root, dir), { recursive: true });
 const manifest = path.join(root, 'library.json');
 let library = fs.existsSync(manifest) ? JSON.parse(fs.readFileSync(manifest, 'utf8').replace(/^\uFEFF/, '')) : [];
 const jobs = new Map();
+const catalog = createCatalog({ root });
 const app = express();
 app.use((req, res, next) => {
   // The editor is intentionally a loopback-only application.
@@ -25,6 +27,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/media', express.static(path.join(root, 'media')));
+app.get('/vendor/hls.min.js', (req, res) => res.sendFile(path.join(__dirname, 'node_modules/hls.js/dist/hls.min.js')));
 const upload = multer({ dest: path.join(root, 'media'), limits: { fileSize: 8 * 1024 ** 3, files: 20 } });
 
 function command(binary, args, options = {}) {
@@ -41,6 +44,33 @@ async function probe(file) {
   return JSON.parse(await command(ffprobe, ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', file]));
 }
 app.get('/api/library', (req, res) => res.json(library));
+const catalogRoute = fn => async (req, res) => { try { await fn(req, res); } catch (error) { res.status(error.status || 502).json({ error: error.status ? error.message : 'Could not load this sound library. Please try again.' }); } };
+app.get('/api/audio/providers', (req, res) => res.json(catalog.status()));
+app.post('/api/audio/providers/epidemic', catalogRoute(async (req, res) => res.json(await catalog.connect(req.body))));
+app.get('/api/audio/catalog', catalogRoute(async (req, res) => res.json(await catalog.search(req.query))));
+app.post('/api/audio/catalog/preview', catalogRoute(async (req, res) => res.json(await catalog.preview(req.body.provider, req.body.id))));
+const pendingCatalogImports = new Map();
+async function importCatalogTrack(provider, trackId) {
+  const key = `${provider}:${trackId}`;
+  const existing = library.find(m => m.catalog?.provider === provider && m.catalog?.trackId === trackId);
+  if (existing) { catalog.assertLicensed([existing]); return existing; }
+  if (pendingCatalogImports.has(key)) return pendingCatalogImports.get(key);
+  const task = (async () => {
+    const id = randomUUID(), file = path.join(root, 'media', id);
+    try {
+      const track = await catalog.prepare(provider, trackId, file);
+      if (provider === 'builtin') fs.copyFileSync(file, `${file}.m4a`);
+      else await command(ffmpeg, ['-y', '-i', file, '-vn', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', `${file}.m4a`]);
+      const info = await probe(file); const duration = Number(info.format.duration);
+      if (!Number.isFinite(duration) || duration < 0.08) throw new Error('Invalid audio');
+      const item = { id, name: track.title, type: 'audio', duration, size: fs.statSync(file).size, url: `/media/${id}.m4a`, catalog: track.catalog };
+      library.push(item); fs.writeFileSync(manifest, JSON.stringify(library, null, 2)); return item;
+    } catch (error) { fs.rmSync(file, { force: true }); fs.rmSync(`${file}.m4a`, { force: true }); throw error; }
+  })();
+  pendingCatalogImports.set(key, task);
+  try { return await task; } finally { pendingCatalogImports.delete(key); }
+}
+app.post('/api/audio/catalog/add', catalogRoute(async (req, res) => res.json(await importCatalogTrack(req.body.provider, req.body.id))));
 app.post('/api/audio/import', upload.array('audio', 20), async (req, res, next) => {
   const imported = [], errors = [];
   try {
@@ -117,6 +147,7 @@ function validateProject(body) {
     if (end - start < 0.08) throw new Error('Each music clip must be at least 0.08 seconds long.');
     return { media, start, end, at: number(c.at, 0, 0, 86400), volume: number(c.volume, 0.5, 0, 1) };
   });
+  catalog.assertLicensed(music.map(clip => clip.media));
   return { clips, music, settings: { resolution, aspect, quality, fps, text } };
 }
 function dimensions(media, settings) {
@@ -190,9 +221,15 @@ async function render(job, project) {
       args.push('-filter_complex', filters.join(';'), '-map', '0:v:0', '-map', '[mix]', '-t', String(total), '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', output);
       await run(args, total, 0);
     }
-    if (job.status !== 'cancelled') { job.status = 'complete'; job.progress = 100; job.message = 'Your video is ready'; }
+    if (job.status !== 'cancelled') {
+      const used = music.filter(c => c.at < total && c.volume > 0);
+      await catalog.exported(used);
+      job.credits = catalog.credits(used);
+      if (job.credits) fs.writeFileSync(path.join(root, 'exports', `${job.id}-credits.txt`), job.credits);
+      job.status = 'complete'; job.progress = 100; job.message = 'Your video is ready';
+    }
   } catch (error) {
-    if (job.status !== 'cancelled') { job.status = 'error'; job.message = 'Export failed. Try a lower resolution or re-import the source clip.'; console.error(error.message); }
+    if (job.status !== 'cancelled') { job.status = 'error'; job.message = error.status ? error.message : 'Export failed. Try a lower resolution or re-import the source clip.'; console.error(error.message); }
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
     if (job.status !== 'complete') fs.rmSync(path.join(root, 'exports', `${job.id}.mp4`), { force: true });
@@ -206,7 +243,7 @@ app.post('/api/exports', (req, res) => {
     jobs.set(job.id, job);
     render(job, project).catch(error => { job.status = 'error'; job.message = error.message; });
     res.json({ id: job.id });
-  } catch (error) { res.status(400).json({ error: error.message }); }
+  } catch (error) { res.status(error.status || 400).json({ error: error.message }); }
 });
 app.get('/api/exports/:id', (req, res) => {
   const job = jobs.get(req.params.id);
@@ -222,6 +259,10 @@ app.delete('/api/exports/:id', (req, res) => {
 app.get('/api/exports/:id/download', (req, res) => {
   if (jobs.get(req.params.id)?.status !== 'complete') return res.sendStatus(404);
   res.download(path.join(root, 'exports', `${req.params.id}.mp4`), 'Frame-export.mp4');
+});
+app.get('/api/exports/:id/credits', (req, res) => {
+  if (jobs.get(req.params.id)?.status !== 'complete' || !jobs.get(req.params.id)?.credits) return res.sendStatus(404);
+  res.download(path.join(root, 'exports', `${req.params.id}-credits.txt`), 'Frame-music-credits.txt');
 });
 app.use((error, req, res, next) => { console.error(error.message); res.status(400).json({ error: error.code === 'LIMIT_FILE_SIZE' ? 'Please import videos smaller than 8 GB.' : 'Could not complete this request. Please try again.' }); });
 const port = Number(process.env.PORT || 4317);

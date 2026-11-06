@@ -154,3 +154,21 @@ test('mixes trimmed music at the chosen time and volume while retaining source s
   assert.ok(amplitude(3.2, 440) < 30 && amplitude(3.2, 880) < 30, 'Silent video has silence between music clips');
   assert.ok(amplitude(3.7, 880) > amplitude(0.7, 880) * 1.7, 'Second music clip uses its own volume and survives the video cut');
 });
+
+test('adds real catalog music once and supplies credits for the exported video', { timeout: 90000 }, async () => {
+  const request = () => fetch(`${base}/api/audio/catalog/add`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'builtin', id: 'pulse' }) });
+  const responses = await Promise.all([request(), request()]);
+  const tracks = await Promise.all(responses.map(r => { assert.equal(r.status, 200); return r.json(); }));
+  assert.equal(tracks[0].id, tracks[1].id, 'Concurrent adds reuse the same source');
+  assert.equal(tracks[0].catalog.artist, 'Kevin MacLeod');
+  const response = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips: [{ mediaId: imported[0].id, end: 1 }], music: [{ mediaId: tracks[0].id, start: 10, end: 11, at: 0, volume: 0.4 }] }) });
+  assert.equal(response.status, 200); const { id } = await response.json(); let job;
+  for (let i = 0; i < 100; i++) { job = await (await fetch(`${base}/api/exports/${id}`)).json(); if (job.status !== 'rendering') break; await new Promise(resolve => setTimeout(resolve, 200)); }
+  assert.equal(job.status, 'complete', JSON.stringify(job));
+  const credits = await fetch(`${base}/api/exports/${id}/credits`); assert.equal(credits.status, 200);
+  const text = await credits.text(); assert.match(text, /Kevin MacLeod/); assert.match(text, /CC BY 4.0/); assert.match(text, /Excerpt/);
+  const providers = await (await fetch(`${base}/api/audio/providers`)).json();
+  assert.equal(providers.find(p => p.id === 'epidemic').canAdd, false);
+  const blocked = await fetch(`${base}/api/audio/catalog/add`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'feed', id: 'unlicensed-song' }) });
+  assert.equal(blocked.status, 404);
+});

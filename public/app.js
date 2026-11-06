@@ -157,7 +157,7 @@ function renderTimeline() {
   renderMusic();
   updateTime();
 }
-function stop() { playing = false; video.pause(); pauseMusic(); $('play').textContent = '▶'; $('play').setAttribute('aria-label', 'Play timeline'); }
+function stop() { playing = false; video.pause(); pauseMusic(); stopCatalogPreview(); $('play').textContent = '▶'; $('play').setAttribute('aria-label', 'Play timeline'); }
 function selectClip(index, at, resume = false) {
   if (!resume) stop();
   selectedMusicId = '';
@@ -306,7 +306,7 @@ $('project-input').onchange = async e => {
 };
 $('new-project').onclick = () => $('new-dialog').showModal(); $('keep-project').onclick = () => $('new-dialog').close();
 $('confirm-new').onclick = () => { if (importing) return toast('Wait for the import to finish before starting a new project.'); remember(); project = defaults(); selected = -1; $('media-search').value = ''; video.dataset.mediaId = ''; restore(); $('new-dialog').close(); };
-$('open-export').onclick = () => { if (!project.clips.length) return toast('Add a video to your timeline first.'); stop(); $('export-description').textContent = `${project.clips.length} clip${project.clips.length === 1 ? '' : 's'} · ${time(total())} total. All timeline clips will be joined in order into one MP4 video.`; $('export-dialog').showModal(); };
+$('open-export').onclick = () => { if (!project.clips.length) return toast('Add a video to your timeline first.'); stop(); $('export-credit-note').hidden = !project.music.some(c => musicSource(c)?.catalog?.attributionRequired && c.volume > 0 && c.at < total()); $('export-description').textContent = `${project.clips.length} clip${project.clips.length === 1 ? '' : 's'} · ${time(total())} total. All timeline clips will be joined in order into one MP4 video.`; $('export-dialog').showModal(); };
 $('close-export').onclick = () => $('export-dialog').close();
 function exportBusy(busy) { for (const key of ['resolution', 'fps', 'quality']) $(key).disabled = busy; $('start-export').hidden = busy; $('cancel-export').hidden = !busy; }
 async function poll() {
@@ -314,13 +314,13 @@ async function poll() {
     const job = await api(`/api/exports/${jobId}`);
     $('export-message').textContent = job.message; $('export-progress').value = job.progress; $('export-percent').textContent = `${job.progress}%`;
     if (job.status === 'rendering') pollTimer = setTimeout(poll, 750);
-    else { exportBusy(false); if (job.status === 'complete') { $('download-export').href = `/api/exports/${job.id}/download`; $('download-export').hidden = false; $('start-export').textContent = 'Export again'; toast('Your MP4 is ready to download.'); } }
+    else { exportBusy(false); if (job.status === 'complete') { $('download-export').href = `/api/exports/${job.id}/download`; $('download-export').hidden = false; $('download-credits').hidden = !job.credits; $('download-credits').href = `/api/exports/${job.id}/credits`; $('start-export').textContent = 'Export again'; toast('Your MP4 is ready to download.'); } }
   } catch (error) { exportBusy(false); $('export-message').textContent = error.message; }
 }
 $('export-form').onsubmit = async e => {
   e.preventDefault(); if (jobId && !$('cancel-export').hidden) return;
   for (const key of ['resolution', 'fps', 'quality']) project.settings[key] = $(key).value;
-  save(); exportBusy(true); $('download-export').hidden = true; $('export-status').hidden = false; $('export-message').textContent = 'Preparing your video'; $('export-progress').value = 0; $('export-percent').textContent = '0%';
+  save(); exportBusy(true); $('download-export').hidden = true; $('download-credits').hidden = true; $('export-status').hidden = false; $('export-message').textContent = 'Preparing your video'; $('export-progress').value = 0; $('export-percent').textContent = '0%';
   try { const result = await api('/api/exports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(project) }); jobId = result.id; clearTimeout(pollTimer); poll(); }
   catch (error) { exportBusy(false); $('export-message').textContent = error.message; }
 };
@@ -573,4 +573,5 @@ video.addEventListener('play', () => {
 });
 new ResizeObserver(() => { applyPreview(); if (!timelineGesture) renderTimeline(); }).observe($('preview-stage'));
 setupMusic();
+setupCatalog();
 init();

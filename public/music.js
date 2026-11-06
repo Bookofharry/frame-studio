@@ -53,7 +53,7 @@ function renderMusicLibrary() {
     details.textContent = `${time(media.duration)} original${uses.length ? ` · ${uses.length} on timeline` : ''}`;
     const add = document.createElement('button'); add.className = 'mini'; add.textContent = '+ Add at playhead'; add.setAttribute('aria-label', `Add music ${media.name}`);
     add.onclick = () => addMusic(media);
-    card.append(name, details, add); $('music-library').append(card);
+    if (media.catalog) { const license = document.createElement('small'); license.textContent = media.catalog.license + (media.catalog.attributionRequired ? ' - Credit required' : ''); card.append(name, details, license, add); } else card.append(name, details, add); $('music-library').append(card);
   }
   $('music-empty').hidden = musicLibrary.length > 0;
 }
@@ -67,7 +67,7 @@ async function importMusic(files) {
   if (!files.length) return;
   if (importing) return toast('Wait for the current import to finish.');
   if (files.length > 20) return toast('Import up to 20 audio files at a time.');
-  stop(); importing = true; $('import-music').disabled = true; $('music-import-status').textContent = 'Importing audio…';
+  stop(); setAudioView('project'); importing = true; $('import-music').disabled = true; $('music-import-status').textContent = 'Importing audio…';
   const form = new FormData(); for (const file of files) form.append('audio', file);
   try {
     const result = await api('/api/audio/import', { method: 'POST', body: form });
