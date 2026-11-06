@@ -1,0 +1,184 @@
+const express = require('express');
+const multer = require('multer');
+const fs = require('node:fs');
+const path = require('node:path');
+const { randomUUID } = require('node:crypto');
+const { spawn } = require('node:child_process');
+const ffmpeg = require('ffmpeg-static');
+const ffprobe = require('ffprobe-static').path;
+const cropGeometry = require('./public/crop');
+
+const root = process.env.FRAME_DATA_DIR || path.join(__dirname, 'data');
+for (const dir of ['media', 'exports', 'temp']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+const manifest = path.join(root, 'library.json');
+let library = fs.existsSync(manifest) ? JSON.parse(fs.readFileSync(manifest, 'utf8').replace(/^\uFEFF/, '')) : [];
+const jobs = new Map();
+const app = express();
+app.use((req, res, next) => {
+  // The editor is intentionally a loopback-only application.
+  const host = req.headers.host || '';
+  if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return res.sendStatus(403);
+  if (req.headers.origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(req.headers.origin)) return res.sendStatus(403);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+});
+app.use(express.json({ limit: '1mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+app.use('/media', express.static(path.join(root, 'media')));
+const upload = multer({ dest: path.join(root, 'media'), limits: { fileSize: 8 * 1024 ** 3, files: 20 } });
+
+function command(binary, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(binary, args, { windowsHide: true, ...options });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-12000); });
+    child.on('error', reject);
+    child.on('close', code => code === 0 ? resolve(stdout) : reject(new Error(stderr || 'Video processing failed')));
+  });
+}
+async function probe(file) {
+  return JSON.parse(await command(ffprobe, ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', file]));
+}
+app.get('/api/library', (req, res) => res.json(library));
+app.post('/api/import', upload.array('videos', 20), async (req, res, next) => {
+  const imported = [], errors = [];
+  try {
+    for (const file of req.files || []) {
+      try {
+        const info = await probe(file.path);
+        const video = info.streams.find(s => s.codec_type === 'video' && !s.disposition?.attached_pic);
+        const duration = Number(info.format.duration || video?.duration);
+        if (!video || !Number.isFinite(duration) || duration <= 0) throw new Error('Not a playable video');
+        const id = file.filename;
+        const rate = video.avg_frame_rate?.split('/').map(Number) || [30, 1];
+        const rotation = Math.abs(Number(video.tags?.rotate || video.side_data_list?.find(s => s.rotation)?.rotation || 0));
+        const rotated = rotation % 180 === 90;
+        const item = { id, name: Buffer.from(file.originalname, 'latin1').toString('utf8'), duration, width: rotated ? video.height : video.width, height: rotated ? video.width : video.height, fps: rate[1] ? rate[0] / rate[1] : 30, audio: info.streams.some(s => s.codec_type === 'audio'), size: file.size, url: `/media/${id}`, thumbnail: `/media/${id}.jpg` };
+        await command(ffmpeg, ['-y', '-ss', String(Math.min(duration / 3, 1)), '-i', file.path, '-frames:v', '1', '-vf', 'scale=480:-2', path.join(root, 'media', `${id}.jpg`)]);
+        library.push(item); imported.push(item);
+      } catch { fs.rmSync(file.path, { force: true }); errors.push(`${file.originalname}: this file could not be read as a video.`); }
+    }
+    fs.writeFileSync(manifest, JSON.stringify(library, null, 2));
+    res.json({ imported, errors });
+  } catch (error) { next(error); }
+});
+function number(value, fallback, min, max) {
+  const n = value === undefined ? fallback : Number(value);
+  if (!Number.isFinite(n) || n < min || n > max) throw new Error(`Value must be between ${min} and ${max}.`);
+  return n;
+}
+function validateProject(body) {
+  if (!Array.isArray(body.clips) || !body.clips.length || body.clips.length > 100) throw new Error('Add between 1 and 100 clips to your timeline.');
+  const clips = body.clips.map(c => {
+    const media = library.find(m => m.id === c.mediaId);
+    if (!media) throw new Error('A source video is missing. Import it again.');
+    const start = number(c.start, 0, 0, media.duration);
+    const end = number(c.end, media.duration, 0, media.duration);
+    if (end - start < 0.08) throw new Error('Each clip must be at least 0.08 seconds long.');
+    const crop = c.crop === undefined || c.crop === null ? cropGeometry.full(media) : c.crop;
+    if (!cropGeometry.valid(crop, media)) throw new Error('The crop must stay within the source video and be at least 2 × 2 pixels.');
+    return { media, crop, start, end, speed: number(c.speed, 1, 0.5, 7), volume: number(c.volume, 1, 0, 1), brightness: number(c.brightness, 0, -0.5, 0.5), contrast: number(c.contrast, 1, 0.5, 2), saturation: number(c.saturation, 1, 0, 2) };
+  });
+  const settings = body.settings || {};
+  const resolution = ['source', '720', '1080', '2160'].includes(settings.resolution) ? settings.resolution : 'source';
+  const aspect = ['source', '16:9', '9:16', '1:1'].includes(settings.aspect) ? settings.aspect : 'source';
+  const quality = ['18', '20', '23'].includes(String(settings.quality)) ? String(settings.quality) : '18';
+  const fps = ['source', '24', '30', '60'].includes(String(settings.fps)) ? String(settings.fps) : 'source';
+  const text = String(settings.text || '').slice(0, 120);
+  return { clips, settings: { resolution, aspect, quality, fps, text } };
+}
+function dimensions(media, settings) {
+  let ratio = media.width / media.height;
+  if (settings.aspect !== 'source') { const [w, h] = settings.aspect.split(':').map(Number); ratio = w / h; }
+  const shortEdge = settings.resolution === 'source' ? Math.min(media.width, media.height) : Number(settings.resolution);
+  const even = v => Math.max(2, Math.round(v / 2) * 2);
+  return ratio >= 1 ? [even(shortEdge * ratio), even(shortEdge)] : [even(shortEdge), even(shortEdge / ratio)];
+}
+async function render(job, project) {
+  const work = path.join(root, 'temp', job.id);
+  fs.mkdirSync(work, { recursive: true });
+  const { clips, settings } = project;
+  const [w, h] = dimensions(clips[0].crop, settings);
+  const fps = settings.fps === 'source' ? Math.min(60, Math.max(1, clips[0].media.fps)) : Number(settings.fps);
+  job.width = w; job.height = h;
+  if (settings.text) fs.writeFileSync(path.join(work, 'title.txt'), settings.text);
+  const font = process.platform === 'win32' ? 'C:/Windows/Fonts/arial.ttf' : '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
+  if (settings.text) fs.copyFileSync(font, path.join(work, 'font.ttf'));
+  const total = clips.reduce((sum, c) => sum + (c.end - c.start) / c.speed, 0);
+  let completed = 0;
+  const run = (args, duration, progressWeight = 1) => new Promise((resolve, reject) => {
+    if (job.status === 'cancelled') return reject(new Error('Export cancelled'));
+    const child = spawn(ffmpeg, ['-hide_banner', '-y', '-progress', 'pipe:1', '-nostats', ...args], { cwd: work, windowsHide: true });
+    job.process = child;
+    let stderr = '', pending = '';
+    child.stdout.on('data', chunk => {
+      pending += chunk;
+      const lines = pending.split('\n'); pending = lines.pop();
+      for (const line of lines) if (line.startsWith('out_time_us=')) {
+        const seconds = Number(line.split('=')[1]) / 1000000;
+        if (Number.isFinite(seconds)) job.progress = Math.min(98, Math.round(95 * (completed + Math.min(seconds, duration) * progressWeight) / total));
+      }
+    });
+    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-6000); });
+    child.on('error', reject);
+    child.on('close', code => { job.process = null; code === 0 ? resolve() : reject(new Error(stderr || 'Export failed')); });
+  });
+  try {
+    for (let i = 0; i < clips.length; i++) {
+      const c = clips[i];
+      const duration = (c.end - c.start) / c.speed;
+      job.message = `Rendering clip ${i + 1} of ${clips.length}`;
+      const args = ['-ss', String(c.start), '-t', String(c.end - c.start), '-i', path.join(root, 'media', c.media.id)];
+      if (!c.media.audio) args.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo');
+      let vf = `setpts=(PTS-STARTPTS)/${c.speed},crop=${c.crop.width}:${c.crop.height}:${c.crop.x}:${c.crop.y}:exact=1,scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,eq=brightness=${c.brightness}:contrast=${c.contrast}:saturation=${c.saturation},fps=${fps},format=yuv420p`;
+      if (settings.text) vf += `,drawtext=fontfile=font.ttf:textfile=title.txt:expansion=none:fontcolor=white:fontsize=${Math.round(h * 0.045)}:box=1:boxcolor=black@0.5:boxborderw=12:x=(w-text_w)/2:y=h-text_h-h*0.08`;
+      // Keep each tempo stage at or below 2x to avoid FFmpeg's sample-skipping mode.
+      let tempo = c.speed; const tempoFilters = [];
+      while (tempo > 2) { tempoFilters.push('atempo=2'); tempo /= 2; }
+      tempoFilters.push(`atempo=${tempo}`);
+      const af = `asetpts=PTS-STARTPTS,${tempoFilters.join(',')},volume=${c.volume},aresample=48000,aformat=channel_layouts=stereo,apad`;
+      args.push('-map', '0:v:0', '-map', c.media.audio ? '0:a:0' : '1:a:0', '-vf', vf, '-af', af, '-t', String(duration), '-c:v', 'libx264', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-video_track_timescale', '90000', `${i}.mp4`);
+      await run(args, duration);
+      completed += duration;
+    }
+    job.message = 'Finishing your MP4'; job.progress = 96;
+    fs.writeFileSync(path.join(work, 'clips.txt'), clips.map((_, i) => `file '${i}.mp4'`).join('\n'));
+    await run(['-f', 'concat', '-safe', '0', '-i', 'clips.txt', '-c', 'copy', '-movflags', '+faststart', path.join(root, 'exports', `${job.id}.mp4`)], total, 0);
+    if (job.status !== 'cancelled') { job.status = 'complete'; job.progress = 100; job.message = 'Your video is ready'; }
+  } catch (error) {
+    if (job.status !== 'cancelled') { job.status = 'error'; job.message = 'Export failed. Try a lower resolution or re-import the source clip.'; console.error(error.message); }
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+    if (job.status !== 'complete') fs.rmSync(path.join(root, 'exports', `${job.id}.mp4`), { force: true });
+  }
+}
+app.post('/api/exports', (req, res) => {
+  try {
+    if ([...jobs.values()].some(j => j.status === 'rendering')) return res.status(409).json({ error: 'An export is already running. Wait for it to finish or cancel it.' });
+    const project = validateProject(req.body);
+    const job = { id: randomUUID(), status: 'rendering', progress: 0, message: 'Preparing your video' };
+    jobs.set(job.id, job);
+    render(job, project).catch(error => { job.status = 'error'; job.message = error.message; });
+    res.json({ id: job.id });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.get('/api/exports/:id', (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Export not found. The app may have restarted.' });
+  const { process: child, ...status } = job;
+  res.json(status);
+});
+app.delete('/api/exports/:id', (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (job?.status === 'rendering') { job.status = 'cancelled'; job.message = 'Export cancelled'; job.process?.kill(); }
+  res.json({ ok: true });
+});
+app.get('/api/exports/:id/download', (req, res) => {
+  if (jobs.get(req.params.id)?.status !== 'complete') return res.sendStatus(404);
+  res.download(path.join(root, 'exports', `${req.params.id}.mp4`), 'Frame-export.mp4');
+});
+app.use((error, req, res, next) => { console.error(error.message); res.status(400).json({ error: error.code === 'LIMIT_FILE_SIZE' ? 'Please import videos smaller than 8 GB.' : 'Could not complete this request. Please try again.' }); });
+const port = Number(process.env.PORT || 4317);
+if (require.main === module) app.listen(port, '127.0.0.1', () => console.log(`Frame is ready at http://127.0.0.1:${port}`));
+module.exports = { app, validateProject, dimensions, probe };
