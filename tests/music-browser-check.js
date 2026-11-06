@@ -1,0 +1,106 @@
+const { chromium } = require('playwright');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+
+async function main() {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'frame-music-browser-'));
+  const root = path.join(__dirname, '..'), fixtures = path.join(root, 'test-results');
+  const server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, PORT: '4319', FRAME_DATA_DIR: temporary }, windowsHide: true });
+  let browser;
+  try {
+    await new Promise((resolve, reject) => { server.stdout.once('data', resolve); server.once('error', reject); });
+    browser = await chromium.launch({ channel: 'msedge', headless: true });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true });
+    const errors = []; page.on('pageerror', error => errors.push(error.message));
+    await page.goto('http://127.0.0.1:4319');
+    await page.locator('[data-workspace="audio"]').click();
+    assert.equal(await page.locator('#import-music').isEnabled(), true, 'Music import is enabled before adding a video');
+    await page.locator('#music-input').setInputFiles(path.join(fixtures, 'sample-music.wav'));
+    await page.waitForFunction(() => document.querySelectorAll('.music-clip').length === 1);
+    assert.equal(await page.locator('.media-card').count(), 0, 'Audio is not listed as a video');
+    assert.equal(await page.locator('#music-controls').isDisabled(), false);
+    await page.locator('#file-input').setInputFiles([path.join(fixtures, 'speed-seven.mp4'), path.join(fixtures, 'sample-silent.mp4')]);
+    await page.waitForFunction(() => document.querySelectorAll('.timeline-clip').length === 2);
+    await page.locator('.music-clip').click();
+    async function setNumber(id, value) { await page.locator(`#${id}`).fill(String(value)); await page.locator(`#${id}`).press('Tab'); }
+    await setNumber('music-start', 1); await setNumber('music-end', 2.5); await setNumber('music-at', 0.5);
+    await page.locator('#music-volume').fill('0.3'); await page.locator('#music-volume').dispatchEvent('change');
+    assert.ok((await page.locator('#music-range').textContent()).includes('00:01.5'));
+    const drag = async (from, to) => { await page.mouse.move(from.x, from.y); await page.mouse.down(); await page.mouse.move(to.x, to.y, { steps: 8 }); await page.mouse.up(); };
+    let box = await page.locator('.music-clip').boundingBox();
+    await drag({ x: box.x + 30, y: box.y + 16 }, { x: box.x + 90, y: box.y + 16 });
+    assert.equal(await page.locator('#music-at').inputValue(), '1.50', 'Music can be dragged independently');
+    await page.locator('#undo').click(); await page.locator('.music-clip').click();
+    assert.equal(await page.locator('#music-at').inputValue(), '0.50');
+    box = await page.locator('.music-handle.end').boundingBox();
+    await drag({ x: box.x + 4, y: box.y + 16 }, { x: box.x - 26, y: box.y + 16 });
+    assert.ok(Math.abs(Number(await page.locator('#music-end').inputValue()) - 2) < 0.03, 'Music trim handle changes source out point');
+    await page.locator('#undo').click();
+    await page.locator('#play-all').click();
+    await page.waitForFunction(() => {
+      const video = document.getElementById('video'), audio = document.querySelector('#music-players audio');
+      return video.currentTime > 0.85 && !audio.paused && Math.abs(audio.currentTime - (video.currentTime + 0.5)) < 0.2;
+    });
+    await page.locator('#play').click();
+    assert.equal(await page.locator('#music-players audio').evaluate(audio => audio.paused), true, 'Pause stops music too');
+    await page.locator('#ruler').click({ position: { x: 72, y: 15 } });
+    await page.locator('#play').click();
+    await page.waitForFunction(() => { const audio = document.querySelector('#music-players audio'); return !audio.paused && audio.currentTime > 1.65; });
+    await page.locator('#play').click();
+    await page.locator('.timeline-clip').first().click();
+    await page.locator('[data-inspector-tab="audio"]').click(); await page.locator('#speed').selectOption('2');
+    await page.locator('#play-all').click();
+    await page.waitForFunction(() => {
+      const video = document.getElementById('video'), audio = document.querySelector('#music-players audio');
+      return video.currentTime > 1.5 && !audio.paused && audio.playbackRate === 1 && Math.abs(audio.currentTime - (video.currentTime / 2 + 0.5)) < 0.2;
+    });
+    await page.locator('#play').click();
+    await page.locator('#ruler').click({ position: { x: 198, y: 15 } });
+    await page.locator('.music-card button').click();
+    assert.equal(await page.locator('.music-clip').count(), 2);
+    await setNumber('music-start', 1); await setNumber('music-end', 2.5); await setNumber('music-at', 3.25);
+    await page.locator('#play').click();
+    await page.waitForFunction(() => {
+      const video = document.getElementById('video'), audios = [...document.querySelectorAll('#music-players audio')];
+      return video.videoHeight === 640 && video.currentTime > 0.2 && !audios[1].paused && Math.abs(audios[1].currentTime - (1.25 + video.currentTime)) < 0.2;
+    });
+    await page.locator('#play').click();
+    await page.locator('.music-clip').nth(1).click();
+    await page.locator('#music-remove').click(); assert.equal(await page.locator('.music-clip').count(), 1);
+    await page.locator('#undo').click(); assert.equal(await page.locator('.music-clip').count(), 2);
+    const saved = page.waitForEvent('download'); await page.locator('#save-project').click();
+    const projectPath = path.join(fixtures, 'music-project.frame.json'); await (await saved).saveAs(projectPath);
+    const data = JSON.parse(fs.readFileSync(projectPath)); assert.equal(data.music.length, 2); assert.equal(data.music[0].volume, 0.3);
+    await page.locator('#new-project').click(); await page.locator('#confirm-new').click();
+    assert.equal(await page.locator('.music-clip').count(), 0); assert.equal(await page.locator('.music-card').count(), 0);
+    assert.equal(await page.locator('#music-players audio').count(), 0, 'New project releases the music players');
+    await page.locator('#project-input').setInputFiles(projectPath);
+    await page.waitForFunction(() => document.querySelectorAll('.music-clip').length === 2);
+    await page.reload(); await page.waitForFunction(() => document.querySelectorAll('.music-clip').length === 2);
+    await page.locator('[data-workspace="audio"]').click(); await page.locator('.music-clip').first().click();
+    assert.equal(await page.locator('#music-start').inputValue(), '1.00'); assert.equal(await page.locator('#music-volume').inputValue(), '0.3');
+    const invalid = structuredClone(data); invalid.music[0].volume = -1;
+    await page.locator('#project-input').setInputFiles({ name: 'invalid.frame.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(invalid)) });
+    await page.waitForFunction(() => document.getElementById('toast').textContent.includes('invalid music'));
+    assert.equal(await page.locator('.music-clip').count(), 2, 'Invalid music project leaves the current project intact');
+    await page.screenshot({ path: path.join(fixtures, 'music-desktop.png'), fullPage: true });
+    await page.locator('#open-export').click(); await page.locator('#start-export').click();
+    await page.locator('#download-export').waitFor({ state: 'visible', timeout: 90000 });
+    const download = page.waitForEvent('download'); await page.locator('#download-export').click(); await (await download).saveAs(path.join(fixtures, 'music-browser-export.mp4'));
+    await page.locator('#close-export').click();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: path.join(fixtures, 'music-mobile.png'), fullPage: true });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'Music controls fit mobile width');
+    await page.locator('.music-clip').first().click(); await page.keyboard.press('Delete');
+    assert.equal(await page.locator('.music-clip').count(), 1, 'Delete removes selected music, not video');
+    assert.equal(await page.locator('.timeline-clip').count(), 2);
+    assert.deepEqual(errors, []);
+    console.log('PASS: audio import, independent drag/trim/volume, synchronized preview/seek/pause/speed/video cuts, removal and undo, save/open/reload, empty new project, invalid project handling, music export and mobile layout.');
+  } finally {
+    await browser?.close(); server.kill(); await new Promise(resolve => server.once('close', resolve)); fs.rmSync(temporary, { recursive: true, force: true });
+  }
+}
+main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -41,6 +41,29 @@ async function probe(file) {
   return JSON.parse(await command(ffprobe, ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', file]));
 }
 app.get('/api/library', (req, res) => res.json(library));
+app.post('/api/audio/import', upload.array('audio', 20), async (req, res, next) => {
+  const imported = [], errors = [];
+  try {
+    for (const file of req.files || []) {
+      try {
+        const info = await probe(file.path);
+        const audio = info.streams.find(s => s.codec_type === 'audio');
+        const duration = Number(info.format.duration || audio?.duration);
+        if (!audio || !Number.isFinite(duration) || duration < 0.08) throw new Error('Not playable audio');
+        const id = file.filename;
+        // A consistent browser preview; export always reads the original source.
+        await command(ffmpeg, ['-y', '-i', file.path, '-map', '0:a:0', '-vn', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', `${file.path}.m4a`]);
+        const item = { id, type: 'audio', name: Buffer.from(file.originalname, 'latin1').toString('utf8'), duration, size: file.size, url: `/media/${id}.m4a` };
+        library.push(item); imported.push(item);
+      } catch {
+        fs.rmSync(file.path, { force: true }); fs.rmSync(`${file.path}.m4a`, { force: true });
+        errors.push(`${file.originalname}: no readable audio was found.`);
+      }
+    }
+    fs.writeFileSync(manifest, JSON.stringify(library, null, 2));
+    res.json({ imported, errors });
+  } catch (error) { next(error); }
+});
 app.post('/api/import', upload.array('videos', 20), async (req, res, next) => {
   const imported = [], errors = [];
   try {
@@ -72,7 +95,7 @@ function validateProject(body) {
   if (!Array.isArray(body.clips) || !body.clips.length || body.clips.length > 100) throw new Error('Add between 1 and 100 clips to your timeline.');
   const clips = body.clips.map(c => {
     const media = library.find(m => m.id === c.mediaId);
-    if (!media) throw new Error('A source video is missing. Import it again.');
+    if (!media || media.type === 'audio') throw new Error('A source video is missing. Import it again.');
     const start = number(c.start, 0, 0, media.duration);
     const end = number(c.end, media.duration, 0, media.duration);
     if (end - start < 0.08) throw new Error('Each clip must be at least 0.08 seconds long.');
@@ -86,7 +109,15 @@ function validateProject(body) {
   const quality = ['18', '20', '23'].includes(String(settings.quality)) ? String(settings.quality) : '18';
   const fps = ['source', '24', '30', '60'].includes(String(settings.fps)) ? String(settings.fps) : 'source';
   const text = String(settings.text || '').slice(0, 120);
-  return { clips, settings: { resolution, aspect, quality, fps, text } };
+  if (body.music !== undefined && (!Array.isArray(body.music) || body.music.length > 20)) throw new Error('Use up to 20 music clips.');
+  const music = (body.music || []).map(c => {
+    const media = library.find(m => m.id === c.mediaId && m.type === 'audio');
+    if (!media) throw new Error('A music source is missing. Import it again.');
+    const start = number(c.start, 0, 0, media.duration), end = number(c.end, media.duration, 0, media.duration);
+    if (end - start < 0.08) throw new Error('Each music clip must be at least 0.08 seconds long.');
+    return { media, start, end, at: number(c.at, 0, 0, 86400), volume: number(c.volume, 0.5, 0, 1) };
+  });
+  return { clips, music, settings: { resolution, aspect, quality, fps, text } };
 }
 function dimensions(media, settings) {
   let ratio = media.width / media.height;
@@ -98,7 +129,7 @@ function dimensions(media, settings) {
 async function render(job, project) {
   const work = path.join(root, 'temp', job.id);
   fs.mkdirSync(work, { recursive: true });
-  const { clips, settings } = project;
+  const { clips, music, settings } = project;
   const [w, h] = dimensions(clips[0].crop, settings);
   const fps = settings.fps === 'source' ? Math.min(60, Math.max(1, clips[0].media.fps)) : Number(settings.fps);
   job.width = w; job.height = h;
@@ -144,7 +175,21 @@ async function render(job, project) {
     }
     job.message = 'Finishing your MP4'; job.progress = 96;
     fs.writeFileSync(path.join(work, 'clips.txt'), clips.map((_, i) => `file '${i}.mp4'`).join('\n'));
-    await run(['-f', 'concat', '-safe', '0', '-i', 'clips.txt', '-c', 'copy', '-movflags', '+faststart', path.join(root, 'exports', `${job.id}.mp4`)], total, 0);
+    const output = path.join(root, 'exports', `${job.id}.mp4`);
+    const audible = music.filter(c => c.at < total && c.volume > 0);
+    await run(['-f', 'concat', '-safe', '0', '-i', 'clips.txt', '-c', 'copy', '-movflags', '+faststart', audible.length ? 'joined.mp4' : output], total, 0);
+    if (audible.length) {
+      job.message = 'Mixing music and original sound';
+      const args = ['-i', 'joined.mp4'];
+      const filters = ['[0:a]aresample=48000,aformat=channel_layouts=stereo,apad[original]'];
+      audible.forEach((c, index) => {
+        args.push('-ss', String(c.start), '-t', String(Math.min(c.end - c.start, total - c.at)), '-i', path.join(root, 'media', c.media.id));
+        filters.push(`[${index + 1}:a:0]asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,volume=${c.volume},adelay=${Math.round(c.at * 48000)}S:all=1[m${index}]`);
+      });
+      filters.push(`[original]${audible.map((_, i) => `[m${i}]`).join('')}amix=inputs=${audible.length + 1}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=0:latency=1[mix]`);
+      args.push('-filter_complex', filters.join(';'), '-map', '0:v:0', '-map', '[mix]', '-t', String(total), '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', output);
+      await run(args, total, 0);
+    }
     if (job.status !== 'cancelled') { job.status = 'complete'; job.progress = 100; job.message = 'Your video is ready'; }
   } catch (error) {
     if (job.status !== 'cancelled') { job.status = 'error'; job.message = 'Export failed. Try a lower resolution or re-import the source clip.'; console.error(error.message); }

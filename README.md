@@ -21,6 +21,16 @@ The left library stays synchronized with the timeline. Each clip row shows its e
 
 Videos join automatically in timeline order. Drag clips to arrange them, or use the left/right arrows in the toolbar. **Add from library** also lets you select multiple existing videos in order. The selections append after the existing timeline and preserve your edits. **Play all** previews the complete sequence from the beginning. **Export** saves every clip as one MP4. A batch addition or drag operation can be undone in one step.
 
+## Adding music and sound effects
+
+Open **Audio** in the left sidebar and click **Import audio**, or use **+ Add music** above the timeline. MP3, WAV, M4A, AAC, FLAC, and OGG files are supported. You can import music before or after adding videos. Files stay on this computer.
+
+Imported audio appears on separate green timeline lanes, starting at the playhead. A batch of audio files is added consecutively. Use **Add at playhead** to reuse a sound from the audio library. Select a music clip to adjust its timeline start, source trim in/out, and volume in the inspector. Drag the middle to move it, or drag its edges to trim. **Remove music clip** or Delete removes the selected music; Undo restores it. Up to 20 music clips can overlap.
+
+Music plays alongside the video's original sound and keeps its own speed when you change a video's speed. Select a video clip and use its Audio controls to lower or mute its original sound. Playback, pause, and seeking keep music aligned with the video. Export mixes both into the MP4 and limits peaks; music is cut off when the video ends. The music lanes do not extend the exported video's duration. Preview mixing may differ slightly at very high combined volumes.
+
+Music edits and source references are included in automatic saving and **Save project**. **New** clears the music library and lanes; **Open** restores them. Keep the app's data folder with your saved project files.
+
 ## Quality and limitations
 
 - Exports use FFmpeg, H.264 video, AAC audio, and adjustable CRF quality. Excellent uses CRF 18. Source resolution and frame rate (up to 60 fps) are the defaults. 720p, 1080p, and 4K options refer to the short edge, respecting the canvas orientation.
@@ -28,11 +38,11 @@ Videos join automatically in timeline order. Drag clips to arrange them, or use 
 - Browser color/text preview is approximate. Export uses FFmpeg's color and text filters. Audio speed changes preserve pitch.
 - Browser playback depends on supported codecs. H.264 MP4 works best. FFmpeg can import/export additional formats whose browser preview may be unavailable.
 - Maximum import: 20 files at a time, 8 GB per file. One export runs at a time. Large/4K exports require free disk space and may take time.
-- This version supports sequential clips, original audio, a global title, cuts, trim, crop, speed, and basic color. It does not yet include transitions, music tracks, animated titles, or automatic captions.
+- This version supports sequential clips, original audio, a global title, cuts, trim, crop, speed, and basic color. It also supports imported music and sound effects with independent placement, trim, and volume. It does not yet include transitions, animated titles, or automatic captions.
 
 ## Files and privacy
 
-Videos are copied into `data/media`; exports are stored in `data/exports`. Project files store their own media IDs and do not embed the videos. Starting a new project clears the visible library and timeline without deleting source files used by saved projects. Save before starting a new project if you want to reopen the previous edit later. Keep the `data` folder when moving/backing up the app. No video uploads to an external service are used. Imported media and exports remain until you remove them from the data folder while the app is stopped. Temporary export files are removed after rendering.
+Videos and audio are copied into `data/media`; exports are stored in `data/exports`. Project files store their own media IDs and do not embed the videos. Starting a new project clears the visible library and timeline without deleting source files used by saved projects. Save before starting a new project if you want to reopen the previous edit later. Keep the `data` folder when moving/backing up the app. No video uploads to an external service are used. Imported media and exports remain until you remove them from the data folder while the app is stopped. Temporary export files are removed after rendering.
 
 ## Verification
 
@@ -45,3 +55,5 @@ Join tests export three different colored videos and check frames from the begin
 The workspace redesign was informed by CapCut's official [editing guide](https://www.capcut.com/resource/free-video-edit) and [desktop workflow](https://www.capcut.com/resource/how-to-use-capcut). It uses a media/player/inspector layout with direct timeline editing; the supported feature list above defines Frame's current scope.
 
 FFmpeg filter reference: https://ffmpeg.org/ffmpeg-filters.html
+
+Run `npm run test:music` after `npm test` for music import, drag/trim/volume controls, preview synchronization across video cuts and speed changes, project persistence, export, and mobile layout. Backend music tests decode exported samples and measure frequencies to verify source sound, music timing, trim, volume, mute, and the video end boundary.

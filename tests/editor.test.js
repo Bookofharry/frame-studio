@@ -8,12 +8,13 @@ const ffmpeg = require('ffmpeg-static');
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'frame-test-'));
 process.env.FRAME_DATA_DIR = temporary;
 const { app, probe } = require('../server');
-let server, base, imported;
+let server, base, imported, soundtrack;
 const fixtures = path.join(__dirname, '..', 'test-results');
 before(async () => {
   fs.mkdirSync(fixtures, { recursive: true });
   execFileSync(ffmpeg, ['-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=24:duration=3', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', path.join(fixtures, 'sample-with-audio.mp4')], { stdio: 'ignore', windowsHide: true });
   execFileSync(ffmpeg, ['-y', '-f', 'lavfi', '-i', 'color=c=0x6d9070:size=360x640:rate=30:duration=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', path.join(fixtures, 'sample-silent.mp4')], { stdio: 'ignore', windowsHide: true });
+  execFileSync(ffmpeg, ['-y', '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000:duration=2', '-af', 'adelay=1000:all=1', path.join(fixtures, 'sample-music.wav')], { stdio: 'ignore', windowsHide: true });
   server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.on('listening', resolve)); base = `http://127.0.0.1:${server.address().port}`;
 });
 after(async () => { await new Promise(resolve => server.close(resolve)); fs.rmSync(temporary, { recursive: true, force: true }); });
@@ -96,4 +97,60 @@ test('7x export turns seven seconds into one second with audible audio', { timeo
   let energy = 0; for (let i = 0; i < pcm.length; i += 2) energy += pcm.readInt16LE(i) ** 2;
   assert.ok(pcm.length >= 14400, 'At least 0.9 seconds of decoded audio');
   assert.ok(Math.sqrt(energy / (pcm.length / 2)) > 100, 'Export retains audible sound');
+});
+
+test('imports music with a browser preview and rejects invalid soundtracks', async () => {
+  const form = new FormData();
+  form.append('audio', new Blob([fs.readFileSync(path.join(fixtures, 'sample-music.wav'))]), 'sample-music.wav');
+  form.append('audio', new Blob(['not audio']), 'bad.mp3');
+  const response = await fetch(`${base}/api/audio/import`, { method: 'POST', body: form });
+  assert.equal(response.status, 200); const result = await response.json();
+  assert.equal(result.imported.length, 1); assert.equal(result.errors.length, 1);
+  soundtrack = result.imported[0]; assert.equal(soundtrack.type, 'audio');
+  assert.equal(soundtrack.duration, 3);
+  const preview = await fetch(base + soundtrack.url); assert.equal(preview.status, 200);
+  assert.match(preview.headers.get('content-type'), /audio|mp4/);
+  const invalidMusic = [
+    [{ mediaId: 'missing' }], [{ mediaId: imported[0].id }], [{ mediaId: soundtrack.id, start: 2, end: 1 }],
+    [{ mediaId: soundtrack.id, volume: 2 }], [{ mediaId: soundtrack.id, at: -1 }],
+    Array.from({ length: 21 }, () => ({ mediaId: soundtrack.id })), { invalid: true }
+  ];
+  for (const music of invalidMusic) {
+    const response = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips: [{ mediaId: imported[0].id }], music }) });
+    assert.equal(response.status, 400);
+  }
+  const invalidVideo = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips: [{ mediaId: soundtrack.id }] }) });
+  assert.equal(invalidVideo.status, 400);
+});
+
+test('mixes trimmed music at the chosen time and volume while retaining source sound', { timeout: 90000 }, async () => {
+  const project = {
+    clips: [{ mediaId: imported[0].id }, { mediaId: imported[1].id, end: 1 }],
+    music: [
+      { mediaId: soundtrack.id, start: 1.2, end: 2.2, at: 0.5, volume: 0.25 },
+      { mediaId: soundtrack.id, start: 1.2, end: 2.2, at: 3.5, volume: 0.5 },
+      { mediaId: soundtrack.id, start: 1, end: 2, at: 2, volume: 0 },
+      { mediaId: soundtrack.id, at: 8, volume: 1 }
+    ]
+  };
+  const response = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(project) });
+  assert.equal(response.status, 200); const { id } = await response.json(); let job;
+  for (let i = 0; i < 160; i++) { job = await (await fetch(`${base}/api/exports/${id}`)).json(); if (job.status !== 'rendering') break; await new Promise(resolve => setTimeout(resolve, 250)); }
+  assert.equal(job.status, 'complete', JSON.stringify(job));
+  const output = path.join(fixtures, 'verified-music.mp4');
+  fs.writeFileSync(output, Buffer.from(await (await fetch(`${base}/api/exports/${id}/download`)).arrayBuffer()));
+  const info = await probe(output); assert.ok(Math.abs(Number(info.format.duration) - 4) < 0.12, 'Music never extends the video');
+  const pcm = execFileSync(ffmpeg, ['-v', 'error', '-i', output, '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', 'pipe:1'], { windowsHide: true });
+  function amplitude(at, hz) {
+    let real = 0, imag = 0; const n = 1200, start = Math.round(at * 8000);
+    for (let i = 0; i < n; i++) { const sample = pcm.readInt16LE((start + i) * 2); const phase = 2 * Math.PI * hz * i / 8000; real += sample * Math.cos(phase); imag += sample * Math.sin(phase); }
+    return 2 * Math.hypot(real, imag) / n;
+  }
+  assert.ok(amplitude(0.2, 440) > 1000, 'Original video sound is present');
+  assert.ok(amplitude(0.2, 880) < 30, 'Music is silent before its timeline offset');
+  assert.ok(amplitude(0.7, 440) > 1000 && amplitude(0.7, 880) > 400, 'Music mixes with original sound, with the source silence trimmed off');
+  assert.ok(amplitude(1.8, 880) < 30, 'Music stops at its trim out point');
+  assert.ok(amplitude(2.3, 880) < 30, 'Muted music stays silent');
+  assert.ok(amplitude(3.2, 440) < 30 && amplitude(3.2, 880) < 30, 'Silent video has silence between music clips');
+  assert.ok(amplitude(3.7, 880) > amplitude(0.7, 880) * 1.7, 'Second music clip uses its own volume and survives the video cut');
 });

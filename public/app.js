@@ -1,16 +1,19 @@
 const $ = id => document.getElementById(id);
 const video = $('video');
 const cropFor = clip => clip.crop || FrameCrop.full(mediaFor(clip));
-const defaults = () => ({ name: 'Untitled project', mediaIds: [], clips: [], settings: { aspect: 'source', text: '', resolution: 'source', fps: 'source', quality: '18' } });
+const defaults = () => ({ name: 'Untitled project', mediaIds: [], clips: [], music: [], settings: { aspect: 'source', text: '', resolution: 'source', fps: 'source', quality: '18' } });
 let project = defaults(), library = [], allMedia = [], selected = -1, history = [], future = [], playing = false, importing = false, jobId = null, pollTimer, toastTimer;
 let pixelsPerSecond = 60, timelineGesture = null, gestureMoved = false, previewFrame = 0;
 try { const saved = JSON.parse(localStorage.getItem('frame-project')); if (saved?.clips && saved?.settings) project = saved; } catch {}
 const mediaFor = clip => library.find(m => m.id === clip?.mediaId);
 function refreshProjectLibrary() {
-  const ids = new Set([...(project.mediaIds || []), ...project.clips.map(clip => clip.mediaId)]);
+  project.music ||= [];
+  const ids = new Set([...(project.mediaIds || []), ...project.clips.map(clip => clip.mediaId), ...project.music.map(clip => clip.mediaId)]);
   project.mediaIds = [...ids];
-  library = allMedia.filter(media => ids.has(media.id));
+  library = allMedia.filter(media => ids.has(media.id) && media.type !== 'audio');
+  musicLibrary = allMedia.filter(media => ids.has(media.id) && media.type === 'audio');
   renderLibrary();
+  renderMusicLibrary();
 }
 const current = () => project.clips[selected];
 const length = clip => (clip.end - clip.start) / clip.speed;
@@ -137,7 +140,8 @@ function renderTimeline() {
   });
   $('clip-count').textContent = `${project.clips.length} clip${project.clips.length === 1 ? '' : 's'}`;
   $('total-time').textContent = time(total()); $('scrubber').max = total() || 1;
-  const width = Math.max($('timeline-scroll').clientWidth, total() * pixelsPerSecond + 180);
+  const extent = Math.max(total(), ...(project.music || []).map(clip => clip.at + clip.end - clip.start));
+  const width = Math.max($('timeline-scroll').clientWidth, extent * pixelsPerSecond + 180);
   $('timeline-content').style.width = `${width}px`;
   const interval = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600].find(value => value * pixelsPerSecond >= 70) || 3600;
   const ticks = []; for (let seconds = 0; seconds * pixelsPerSecond < width; seconds += interval) { const tick = document.createElement('span'); tick.style.left = `${seconds * pixelsPerSecond}px`; tick.textContent = time(seconds); ticks.push(tick); }
@@ -150,11 +154,13 @@ function renderTimeline() {
   $('timeline-later').disabled = selected < 0 || selected >= project.clips.length - 1;
   $('join-summary').textContent = project.clips.length ? `${time(total())} total · All clips export as one video` : 'Drop media onto the track to start';
   syncLibraryState();
+  renderMusic();
   updateTime();
 }
-function stop() { playing = false; video.pause(); $('play').textContent = '▶'; $('play').setAttribute('aria-label', 'Play timeline'); }
+function stop() { playing = false; video.pause(); pauseMusic(); $('play').textContent = '▶'; $('play').setAttribute('aria-label', 'Play timeline'); }
 function selectClip(index, at, resume = false) {
   if (!resume) stop();
+  selectedMusicId = '';
   selected = index; const clip = current(), media = mediaFor(clip);
   $('clip-controls').disabled = !clip; $('preview-empty').hidden = !!clip;
   $('video-frame').style.display = clip ? 'block' : 'none';
@@ -203,6 +209,7 @@ function updateTime() {
   $('timeline-playhead').style.left = `${position * pixelsPerSecond}px`;
   for (const id of ['ruler', 'timeline-playhead']) { $(id).setAttribute('aria-valuemax', total()); $(id).setAttribute('aria-valuenow', position); $(id).setAttribute('aria-valuetext', time(position, 2)); }
   if (playing && !timelineGesture) { const viewport = $('timeline-scroll'); const x = position * pixelsPerSecond; if (x > viewport.scrollLeft + viewport.clientWidth - 25 || x < viewport.scrollLeft) viewport.scrollLeft = Math.max(0, x - 80); }
+  syncMusic(position);
 }
 function seekTimeline(position) {
   let start = 0;
@@ -266,7 +273,7 @@ $('split').onclick = () => {
   if (position - clip.start < 0.08 || clip.end - position < 0.08) return toast('Move the playhead inside the clip before splitting.');
   remember(); const right = { ...clip, id: crypto.randomUUID(), start: position }; clip.end = position; project.clips.splice(selected + 1, 0, right); selectClip(selected + 1); renderTimeline(); save(); toast('Clip split at the playhead.');
 };
-$('remove').onclick = () => { if (!current()) return; remember(); project.clips.splice(selected, 1); selectClip(project.clips.length ? Math.min(selected, project.clips.length - 1) : -1); renderTimeline(); save(); };
+$('remove').onclick = () => { if (selectedMusicId) return removeMusic(); if (!current()) return; remember(); project.clips.splice(selected, 1); selectClip(project.clips.length ? Math.min(selected, project.clips.length - 1) : -1); renderTimeline(); save(); };
 function move(direction) { const next = selected + direction; if (next < 0 || next >= project.clips.length) return; remember(); [project.clips[selected], project.clips[next]] = [project.clips[next], project.clips[selected]]; selectClip(next); renderTimeline(); save(); }
 $('move-left').onclick = () => move(-1); $('move-right').onclick = () => move(1);
 $('timeline-earlier').onclick = () => move(-1); $('timeline-later').onclick = () => move(1);
@@ -291,9 +298,10 @@ $('project-input').onchange = async e => {
     if (data.version !== 1 || typeof data.name !== 'string' || !Array.isArray(data.clips) || !data.settings || data.clips.length > 100) throw new Error('Choose a valid Frame project file.');
     if (data.mediaIds !== undefined && (!Array.isArray(data.mediaIds) || data.mediaIds.some(id => typeof id !== 'string'))) throw new Error('This project contains an invalid media list.');
     allMedia = await api('/api/library');
-    for (const clip of data.clips) { const m = allMedia.find(media => media.id === clip.mediaId); if (m && clip.crop != null && !FrameCrop.valid(clip.crop, m)) throw new Error('This project contains an invalid crop.'); if (!m) throw new Error('This project needs videos that are not in this computer’s library.'); for (const k of ['start', 'end', 'speed', 'volume', 'brightness', 'contrast', 'saturation']) if (!Number.isFinite(clip[k])) throw new Error('This project contains invalid clip settings.'); if (clip.start < 0 || clip.end > m.duration || clip.end - clip.start < 0.08 || clip.speed < 0.5 || clip.speed > 7 || clip.volume < 0 || clip.volume > 1 || Math.abs(clip.brightness) > 0.5 || clip.contrast < 0.5 || clip.contrast > 2 || clip.saturation < 0 || clip.saturation > 2) throw new Error('This project contains invalid clip settings.'); }
+    validateMusic(data.music === undefined ? [] : data.music);
+    for (const clip of data.clips) { const m = allMedia.find(media => media.id === clip.mediaId); if (m && clip.crop != null && !FrameCrop.valid(clip.crop, m)) throw new Error('This project contains an invalid crop.'); if (!m || m.type === 'audio') throw new Error('This project needs videos that are not in this computer’s library.'); for (const k of ['start', 'end', 'speed', 'volume', 'brightness', 'contrast', 'saturation']) if (!Number.isFinite(clip[k])) throw new Error('This project contains invalid clip settings.'); if (clip.start < 0 || clip.end > m.duration || clip.end - clip.start < 0.08 || clip.speed < 0.5 || clip.speed > 7 || clip.volume < 0 || clip.volume > 1 || Math.abs(clip.brightness) > 0.5 || clip.contrast < 0.5 || clip.contrast > 2 || clip.saturation < 0 || clip.saturation > 2) throw new Error('This project contains invalid clip settings.'); }
     if (!['source', '16:9', '9:16', '1:1'].includes(data.settings.aspect) || typeof data.settings.text !== 'string') throw new Error('This project contains invalid canvas settings.');
-    remember(); project = { name: data.name.slice(0, 60), mediaIds: data.mediaIds || data.clips.map(clip => clip.mediaId), clips: data.clips, settings: { ...defaults().settings, ...data.settings, text: data.settings.text.slice(0, 120) } }; $('media-search').value = ''; restore(); toast('Project opened.');
+    remember(); project = { name: data.name.slice(0, 60), mediaIds: data.mediaIds || data.clips.map(clip => clip.mediaId), clips: data.clips, music: data.music || [], settings: { ...defaults().settings, ...data.settings, text: data.settings.text.slice(0, 120) } }; $('media-search').value = ''; restore(); toast('Project opened.');
   } catch (error) { toast(error.message); } finally { e.target.value = ''; }
 };
 $('new-project').onclick = () => $('new-dialog').showModal(); $('keep-project').onclick = () => $('new-dialog').close();
@@ -333,6 +341,7 @@ window.addEventListener('resize', applyPreview);
 async function init() {
   try {
     allMedia = await api('/api/library');
+    project.music = (Array.isArray(project.music) ? project.music : []).filter(clip => allMedia.some(media => media.id === clip.mediaId && media.type === 'audio'));
     // Migrate the current legacy workspace once; new projects have an explicit empty media list.
     if (!Array.isArray(project.mediaIds)) project.mediaIds = project.emptyByChoice && !project.clips.length ? [] : allMedia.map(media => media.id);
     const valid = project.clips.filter(clip => allMedia.some(media => media.id === clip.mediaId));
@@ -454,12 +463,14 @@ $('add-selected').onclick = () => {
 function setInspector(tab) {
   document.querySelectorAll('[data-inspector]').forEach(section => { section.hidden = section.dataset.inspector !== tab; });
   document.querySelectorAll('[data-inspector-tab]').forEach(button => { const active = button.dataset.inspectorTab === tab; button.classList.toggle('active', active); button.setAttribute('aria-pressed', active); });
-  $('clip-controls').hidden = tab === 'text';
+  $('clip-controls').hidden = tab === 'text' || (tab === 'audio' && !!selectedMusicId);
   document.querySelector('.inspector-scroll').scrollTop = 0;
 }
 document.querySelectorAll('[data-inspector-tab]').forEach(button => button.onclick = () => setInspector(button.dataset.inspectorTab));
 document.querySelectorAll('[data-workspace]').forEach(button => button.onclick = () => {
   document.querySelectorAll('[data-workspace]').forEach(item => item.classList.toggle('active', item === button));
+  document.querySelector('.media-content').hidden = button.dataset.workspace === 'audio';
+  $('music-content').hidden = button.dataset.workspace !== 'audio';
   if (button.dataset.workspace === 'media') $('media-search').focus();
   else { setInspector(button.dataset.workspace); document.querySelector('.inspector').scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
 });
@@ -492,6 +503,7 @@ function beginClipGesture(event, id) {
   if (event.button !== 0) return;
   const index = project.clips.findIndex(c => c.id === id); if (index === -1) return;
   event.preventDefault(); event.stopPropagation(); gestureMoved = false; stop();
+  selectedMusicId = '';
   selected = index; renderControls();
   const edge = event.target.closest('.trim-handle')?.dataset.edge;
   timelineGesture = { type: edge ? 'trim' : 'move', id, edge, startX: event.clientX, scrollLeft: $('timeline-scroll').scrollLeft, clip: { ...current() }, snapshot: JSON.stringify(project), target: index, pointer: event.pointerId };
@@ -560,4 +572,5 @@ video.addEventListener('play', () => {
   const tick = () => { if (!playing || video.paused) return; updateTime(); checkClipEnd(); previewFrame = requestAnimationFrame(tick); }; tick();
 });
 new ResizeObserver(() => { applyPreview(); if (!timelineGesture) renderTimeline(); }).observe($('preview-stage'));
+setupMusic();
 init();
