@@ -57,3 +57,4 @@ The workspace redesign was informed by CapCut's official [editing guide](https:/
 FFmpeg filter reference: https://ffmpeg.org/ffmpeg-filters.html
 
 Run `npm run test:music` after `npm test` for music import, drag/trim/volume controls, preview synchronization across video cuts and speed changes, project persistence, export, and mobile layout. Backend music tests decode exported samples and measure frequencies to verify source sound, music timing, trim, volume, mute, and the video end boundary.
+# opensourceVideoEditot
