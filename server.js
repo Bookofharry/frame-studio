@@ -43,6 +43,42 @@ function command(binary, args, options = {}) {
 async function probe(file) {
   return JSON.parse(await command(ffprobe, ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', file]));
 }
+function uploadName(file) {
+  const original = String(file.originalname || 'Untitled media');
+  if (!/[\u00c3\u00c2\u00e2\u00f0]/.test(original)) return original;
+  const repaired = Buffer.from(original, 'latin1').toString('utf8');
+  return repaired.includes('\uFFFD') ? original : repaired;
+}
+function mediaDuration(info, stream) {
+  const direct = [info.format?.duration, stream?.duration].map(Number).find(value => Number.isFinite(value) && value > 0);
+  if (direct) return direct;
+  const durationTs = Number(stream?.duration_ts);
+  const [numerator, denominator] = String(stream?.time_base || '').split('/').map(Number);
+  const calculated = durationTs * numerator / denominator;
+  return Number.isFinite(calculated) && calculated > 0 ? calculated : NaN;
+}
+function videoImportError(name, error) {
+  if (error?.code === 'NO_VIDEO') return `${name}: no video track was found in this file.`;
+  if (error?.code === 'NO_DURATION') return `${name}: the video duration could not be detected. The file may be incomplete.`;
+  if (error?.code === 'DECODE') return `${name}: the video track was found but could not be decoded. Try converting it to H.264 MP4.`;
+  const detail = String(error?.message || '');
+  if (/moov atom not found|invalid data|end of file|error reading header/i.test(detail)) return `${name}: the MP4 is incomplete or damaged. Download or export it again.`;
+  if (/unknown decoder|unsupported codec|not supported/i.test(detail)) return `${name}: this video codec is not supported. Convert it to H.264 MP4 and try again.`;
+  return `${name}: the video container could not be opened. Try re-exporting it as H.264 MP4.`;
+}
+async function makeThumbnail(source, destination, duration) {
+  const attempts = [Math.min(duration / 3, 1), 0];
+  let lastError;
+  for (const at of attempts) {
+    try {
+      await command(ffmpeg, ['-y', '-ss', String(at), '-i', source, '-map', '0:v:0', '-frames:v', '1', '-vf', 'scale=480:-2', destination]);
+      if (fs.existsSync(destination) && fs.statSync(destination).size) return;
+    } catch (error) { lastError = error; }
+  }
+  const error = new Error(lastError?.message || 'No video frame could be decoded');
+  error.code = 'DECODE';
+  throw error;
+}
 app.get('/api/library', (req, res) => res.json(library));
 const catalogRoute = fn => async (req, res) => { try { await fn(req, res); } catch (error) { res.status(error.status || 502).json({ error: error.status ? error.message : 'Could not load this sound library. Please try again.' }); } };
 app.get('/api/audio/providers', (req, res) => res.json(catalog.status()));
@@ -83,11 +119,11 @@ app.post('/api/audio/import', upload.array('audio', 20), async (req, res, next) 
         const id = file.filename;
         // A consistent browser preview; export always reads the original source.
         await command(ffmpeg, ['-y', '-i', file.path, '-map', '0:a:0', '-vn', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', `${file.path}.m4a`]);
-        const item = { id, type: 'audio', name: Buffer.from(file.originalname, 'latin1').toString('utf8'), duration, size: file.size, url: `/media/${id}.m4a` };
+        const item = { id, type: 'audio', name: uploadName(file), duration, size: file.size, url: `/media/${id}.m4a` };
         library.push(item); imported.push(item);
       } catch {
         fs.rmSync(file.path, { force: true }); fs.rmSync(`${file.path}.m4a`, { force: true });
-        errors.push(`${file.originalname}: no readable audio was found.`);
+        errors.push(`${uploadName(file)}: no readable audio was found.`);
       }
     }
     fs.writeFileSync(manifest, JSON.stringify(library, null, 2));
@@ -98,19 +134,25 @@ app.post('/api/import', upload.array('videos', 20), async (req, res, next) => {
   const imported = [], errors = [];
   try {
     for (const file of req.files || []) {
+      const name = uploadName(file);
       try {
         const info = await probe(file.path);
         const video = info.streams.find(s => s.codec_type === 'video' && !s.disposition?.attached_pic);
-        const duration = Number(info.format.duration || video?.duration);
-        if (!video || !Number.isFinite(duration) || duration <= 0) throw new Error('Not a playable video');
+        if (!video) { const error = new Error('No video stream'); error.code = 'NO_VIDEO'; throw error; }
+        const duration = mediaDuration(info, video);
+        if (!Number.isFinite(duration)) { const error = new Error('No video duration'); error.code = 'NO_DURATION'; throw error; }
         const id = file.filename;
         const rate = video.avg_frame_rate?.split('/').map(Number) || [30, 1];
         const rotation = Math.abs(Number(video.tags?.rotate || video.side_data_list?.find(s => s.rotation)?.rotation || 0));
         const rotated = rotation % 180 === 90;
-        const item = { id, name: Buffer.from(file.originalname, 'latin1').toString('utf8'), duration, width: rotated ? video.height : video.width, height: rotated ? video.width : video.height, fps: rate[1] ? rate[0] / rate[1] : 30, audio: info.streams.some(s => s.codec_type === 'audio'), size: file.size, url: `/media/${id}`, thumbnail: `/media/${id}.jpg` };
-        await command(ffmpeg, ['-y', '-ss', String(Math.min(duration / 3, 1)), '-i', file.path, '-frames:v', '1', '-vf', 'scale=480:-2', path.join(root, 'media', `${id}.jpg`)]);
+        const item = { id, name, duration, width: rotated ? video.height : video.width, height: rotated ? video.width : video.height, fps: rate[1] ? rate[0] / rate[1] : 30, audio: info.streams.some(s => s.codec_type === 'audio'), size: file.size, url: `/media/${id}`, thumbnail: `/media/${id}.jpg` };
+        await makeThumbnail(file.path, path.join(root, 'media', `${id}.jpg`), duration);
         library.push(item); imported.push(item);
-      } catch { fs.rmSync(file.path, { force: true }); errors.push(`${file.originalname}: this file could not be read as a video.`); }
+      } catch (error) {
+        console.error(`Video import failed for ${name}: ${error.message}`);
+        fs.rmSync(file.path, { force: true }); fs.rmSync(`${file.path}.jpg`, { force: true });
+        errors.push(videoImportError(name, error));
+      }
     }
     fs.writeFileSync(manifest, JSON.stringify(library, null, 2));
     res.json({ imported, errors });

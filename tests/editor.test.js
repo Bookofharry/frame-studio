@@ -19,14 +19,17 @@ before(async () => {
 });
 after(async () => { await new Promise(resolve => server.close(resolve)); fs.rmSync(temporary, { recursive: true, force: true }); });
 test('imports real videos with audio and silent portrait media', async () => {
-  const form = new FormData(); for (const name of ['sample-with-audio.mp4', 'sample-silent.mp4']) form.append('videos', new Blob([fs.readFileSync(path.join(fixtures, name))]), name);
+  const names = ['Chimpanzee_father_seeing_newborn…_f48fe44e.mp4', 'sample-silent.mp4'];
+  const sources = ['sample-with-audio.mp4', 'sample-silent.mp4'];
+  const form = new FormData(); for (let index = 0; index < names.length; index++) form.append('videos', new Blob([fs.readFileSync(path.join(fixtures, sources[index]))]), names[index]);
   const response = await fetch(`${base}/api/import`, { method: 'POST', body: form }); assert.equal(response.status, 200);
   const result = await response.json(); assert.deepEqual(result.errors, []); assert.equal(result.imported.length, 2); imported = result.imported;
+  assert.equal(imported[0].name, names[0]);
   assert.equal(imported[0].audio, true); assert.equal(imported[1].audio, false); assert.equal(imported[1].height, 640);
 });
 test('rejects invalid trims and non-video files', async () => {
   const response = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips: [{ mediaId: imported[0].id, start: 2, end: 1 }] }) }); assert.equal(response.status, 400);
-  const form = new FormData(); form.append('videos', new Blob(['not video']), 'invalid.mp4'); const result = await (await fetch(`${base}/api/import`, { method: 'POST', body: form })).json(); assert.equal(result.errors.length, 1); assert.equal(result.imported.length, 0);
+  const form = new FormData(); form.append('videos', new Blob(['not video']), 'invalid….mp4'); const result = await (await fetch(`${base}/api/import`, { method: 'POST', body: form })).json(); assert.equal(result.errors.length, 1); assert.equal(result.imported.length, 0); assert.match(result.errors[0], /^invalid…\.mp4: the MP4 is incomplete or damaged/);
 });
 test('renders trims, speed, colors, text, joined clips and silence into a playable MP4', { timeout: 90000 }, async () => {
   const response = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips: [{ mediaId: imported[0].id, start: 0.5, end: 2.5, speed: 2, brightness: 0.05, contrast: 1.1, saturation: 1.2, volume: 0.5 }, { mediaId: imported[1].id, start: 0, end: 1, speed: 0.5 }], settings: { aspect: '16:9', resolution: '720', fps: '30', quality: '18', text: "Frame: 100% yours, 'hello'" } }) });
