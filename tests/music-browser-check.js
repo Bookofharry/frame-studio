@@ -58,6 +58,17 @@ async function main() {
       return video.currentTime > 1.5 && !audio.paused && audio.playbackRate === 1 && Math.abs(audio.currentTime - (video.currentTime / 2 + 0.5)) < 0.2;
     });
     await page.locator('#play').click();
+    await page.locator('.music-clip').first().click();
+    await setNumber('music-start', 0); await setNumber('music-end', 3); await setNumber('music-at', 2.4);
+    await page.evaluate(() => { const seek = document.getElementById('scrubber'); seek.value = '2.8'; seek.dispatchEvent(new Event('input', { bubbles: true })); });
+    await page.locator('#play').click();
+    await page.waitForFunction(() => !document.querySelector('#music-players audio').paused);
+    await page.evaluate(() => { window.musicPauseCount = 0; document.querySelector('#music-players audio').addEventListener('pause', () => window.musicPauseCount++); });
+    await page.waitForFunction(() => document.querySelectorAll('.timeline-clip')[1].getAttribute('aria-pressed') === 'true' && document.getElementById('video').currentTime > 0.5);
+    assert.equal(await page.evaluate(() => window.musicPauseCount), 0, 'Music stays playing throughout a video dissolve');
+    assert.equal(await page.locator('#music-players audio').evaluate(audio => audio.paused), false, 'Music is audible after the clip handoff');
+    await page.locator('#play').click();
+    await page.locator('.music-clip').first().click(); await setNumber('music-end', 2.5); await setNumber('music-start', 1); await setNumber('music-at', 0.5);
     await page.locator('#ruler').click({ position: { x: 198, y: 15 } });
     await page.locator('.music-card button').click();
     assert.equal(await page.locator('.music-clip').count(), 2);

@@ -30,10 +30,11 @@ function syncMusic(position) {
     }
     player.volume = clip.volume;
     const relative = position - clip.at;
-    const active = playing && !video.paused && !video.seeking && video.readyState >= 3 && position < total() && relative >= 0 && relative < clip.end - clip.start;
+    const active = playing && position < total() && relative >= 0 && relative < clip.end - clip.start;
     if (!active || player.readyState < 1) { player.pause(); continue; }
     const target = clip.start + relative;
-    if (player.readyState >= 1 && Math.abs(player.currentTime - target) > 0.12) player.currentTime = target;
+    const videoClockReady = !video.paused && !video.seeking && video.readyState >= 2 && video.dataset.mediaId === current()?.mediaId;
+    if (videoClockReady && Math.abs(player.currentTime - target) > 0.12) player.currentTime = target;
     if (player.paused && !player.dataset.pending) {
       player.dataset.pending = 'true';
       player.play().catch(error => {
@@ -167,7 +168,6 @@ function setupMusic() {
   $('music-volume').oninput = event => { $('music-volume-value').textContent = `${Math.round(Number(event.target.value) * 100)}%`; };
   $('music-at-playhead').onclick = () => changeMusic('at', Number($('scrubber').value));
   $('music-remove').onclick = removeMusic;
-  for (const event of ['waiting', 'seeking', 'pause']) video.addEventListener(event, pauseMusic);
   $('timeline-scroll').addEventListener('scroll', () => { $('track-labels').style.transform = `translateY(-${$('timeline-scroll').scrollTop}px)`; });
   window.addEventListener('pointermove', event => {
     const drag = musicDrag; if (!drag || drag.pointer !== event.pointerId) return;
