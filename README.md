@@ -19,7 +19,7 @@ The left library stays synchronized with the timeline. Each clip row shows its e
 
 ## Joining two or more videos
 
-Videos join automatically in timeline order. Drag clips to arrange them, or use the left/right arrows in the toolbar. **Add from library** also lets you select multiple existing videos in order. The selections append after the existing timeline and preserve your edits. **Play all** previews the complete sequence from the beginning. **Export** saves every clip as one MP4. A batch addition or drag operation can be undone in one step.
+Videos join automatically in timeline order. Click **Arrange & join** to review the complete sequence before applying it: drag numbered rows or use the arrows to reorder, remove unwanted clips, and add another copy from Project media. The builder starts from the current timeline, so opening it never duplicates clips by itself. Trims, crop, speed, color and source-audio settings stay attached to each reordered clip. **Apply sequence** changes the timeline as one undoable action. **Play all** previews every clean cut from the beginning; the next source is preloaded to reduce pauses between different files. **Export** saves the sequence as one MP4.
 
 ## Discover music without uploading
 

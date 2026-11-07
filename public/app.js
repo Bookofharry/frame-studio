@@ -1,5 +1,6 @@
 const $ = id => document.getElementById(id);
 const video = $('video');
+const preloadVideo = $('video-preload');
 const cropFor = clip => clip.crop || FrameCrop.full(mediaFor(clip));
 const defaults = () => ({ name: 'Untitled project', mediaIds: [], clips: [], music: [], settings: { aspect: 'source', text: '', resolution: 'source', fps: 'source', quality: '18' } });
 let project = defaults(), library = [], allMedia = [], selected = -1, history = [], future = [], playing = false, importing = false, jobId = null, pollTimer, toastTimer;
@@ -103,6 +104,7 @@ function syncLibraryState() {
 function addClip(media) {
   return addClips([media]);
 }
+function freshClip(media) { return { id: crypto.randomUUID(), mediaId: media.id, start: 0, end: media.duration, speed: 1, volume: 1, brightness: 0, contrast: 1, saturation: 1 }; }
 function addClips(items) {
   const available = Math.max(0, 100 - project.clips.length);
   const additions = items.slice(0, available);
@@ -110,7 +112,7 @@ function addClips(items) {
   remember();
   delete project.emptyByChoice;
   const firstAdded = project.clips.length;
-  project.clips.push(...additions.map(media => ({ id: crypto.randomUUID(), mediaId: media.id, start: 0, end: media.duration, speed: 1, volume: 1, brightness: 0, contrast: 1, saturation: 1 })));
+  project.clips.push(...additions.map(freshClip));
   selectClip(firstAdded); renderTimeline(); save();
   $('timeline-clips').querySelector('.selected')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   return additions.length;
@@ -158,6 +160,12 @@ function renderTimeline() {
   updateTime();
 }
 function stop() { playing = false; video.pause(); pauseMusic(); stopCatalogPreview(); $('play').textContent = '▶'; $('play').setAttribute('aria-label', 'Play timeline'); }
+function preloadFollowing(index) {
+  const media = mediaFor(project.clips[index + 1]);
+  if (!media) { preloadVideo.removeAttribute('src'); preloadVideo.dataset.mediaId = ''; return; }
+  if (preloadVideo.dataset.mediaId === media.id) return;
+  preloadVideo.dataset.mediaId = media.id; preloadVideo.src = media.url; preloadVideo.load();
+}
 function selectClip(index, at, resume = false) {
   if (!resume) stop();
   selectedMusicId = '';
@@ -168,7 +176,8 @@ function selectClip(index, at, resume = false) {
   $('source-label').textContent = media ? `${media.width} × ${media.height} · ${Math.round(media.fps)} fps` : 'No clip selected';
   $('editing-hint').textContent = media ? `Clip ${index + 1} · ${time(length(clip))} · ${clipState(clip, media)}` : 'Select a timeline clip to edit';
   $('selection-badge').textContent = clip ? `Clip ${index + 1}` : 'Project';
-  if (!clip || !media) { video.dataset.mediaId = ''; video.removeAttribute('src'); video.load(); updateTime(); return; }
+  if (!clip || !media) { video.dataset.mediaId = ''; video.removeAttribute('src'); video.load(); preloadFollowing(-1); updateTime(); return; }
+  preloadFollowing(index);
   const seek = at === undefined ? clip.start : at;
   const ready = () => { video.currentTime = Math.min(clip.end - 0.001, Math.max(clip.start, seek)); applyPreview(); if (resume) video.play().catch(() => { stop(); toast('This file cannot play in the browser. Try an H.264 MP4; export may still work.'); }); updateTime(); };
   if (video.dataset.mediaId !== media.id) { video.dataset.mediaId = media.id; video.src = media.url; video.onloadedmetadata = ready; }
@@ -422,42 +431,57 @@ $('crop-box').addEventListener('pointermove', event => {
 for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) $('crop-box').addEventListener(event, () => { cropDrag = null; });
 window.addEventListener('resize', resizeCropStage);
 
-let joinSelection = [];
-function updateJoinSelection() {
-  $('add-selected').disabled = !joinSelection.length || project.clips.length + joinSelection.length > 100;
-  $('add-selected').textContent = joinSelection.length ? `Add ${joinSelection.length} selected video${joinSelection.length === 1 ? '' : 's'}` : 'Add selected videos';
-  $('join-selection').textContent = `${joinSelection.length} selected · ${project.clips.length} already on timeline. ${project.clips.length + joinSelection.length > 100 ? 'Choose fewer videos: the timeline limit is 100 clips.' : 'Numbers show the order they will be added.'}`;
-  $('join-list').querySelectorAll('input').forEach(input => {
-    const index = joinSelection.indexOf(input.value); input.checked = index !== -1;
-    input.closest('label').querySelector('.join-order').textContent = index === -1 ? '' : index + 1;
+let joinDraft = [], draggedJoinIndex = -1;
+function moveJoinClip(from, to) {
+  if (from < 0 || to < 0 || from >= joinDraft.length || to >= joinDraft.length || from === to) return;
+  const [clip] = joinDraft.splice(from, 1); joinDraft.splice(to, 0, clip); renderJoinBuilder();
+}
+function renderJoinBuilder() {
+  const list = $('join-list'); list.replaceChildren();
+  joinDraft.forEach((clip, index) => {
+    const media = mediaFor(clip); const row = document.createElement('div'); row.className = 'join-item'; row.draggable = true; row.dataset.joinIndex = index;
+    row.setAttribute('aria-label', `Joined clip ${index + 1}: ${media?.name || 'Missing source'}`);
+    row.ondragstart = event => { draggedJoinIndex = index; row.classList.add('dragging'); event.dataTransfer.effectAllowed = 'move'; };
+    row.ondragend = () => { draggedJoinIndex = -1; row.classList.remove('dragging'); };
+    row.ondragover = event => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; };
+    row.ondrop = event => { event.preventDefault(); moveJoinClip(draggedJoinIndex, index); };
+    const order = document.createElement('span'); order.className = 'join-order'; order.textContent = index + 1;
+    const image = document.createElement('img'); image.src = media?.thumbnail || ''; image.alt = '';
+    const details = document.createElement('span'); details.className = 'join-item-details';
+    const name = document.createElement('strong'); name.textContent = media?.name || 'Missing source';
+    const meta = document.createElement('small'); meta.textContent = `${time(length(clip))} edited · In ${time(clip.start, 2)} → Out ${time(clip.end, 2)}`;
+    details.append(name, meta);
+    const actions = document.createElement('span'); actions.className = 'join-row-actions';
+    const earlier = document.createElement('button'); earlier.type = 'button'; earlier.className = 'mini'; earlier.textContent = '↑'; earlier.title = 'Move earlier'; earlier.setAttribute('aria-label', `Move clip ${index + 1} earlier`); earlier.disabled = index === 0; earlier.onclick = () => moveJoinClip(index, index - 1);
+    const later = document.createElement('button'); later.type = 'button'; later.className = 'mini'; later.textContent = '↓'; later.title = 'Move later'; later.setAttribute('aria-label', `Move clip ${index + 1} later`); later.disabled = index === joinDraft.length - 1; later.onclick = () => moveJoinClip(index, index + 1);
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'mini join-remove'; remove.textContent = 'Remove'; remove.setAttribute('aria-label', `Remove clip ${index + 1} from joined sequence`); remove.onclick = () => { joinDraft.splice(index, 1); renderJoinBuilder(); };
+    actions.append(earlier, later, remove); row.append(order, image, details, actions); list.append(row);
   });
+  if (!joinDraft.length) { const empty = document.createElement('p'); empty.className = 'join-empty'; empty.textContent = 'Your sequence is empty. Add videos from Project media below.'; list.append(empty); }
+  const sources = $('join-sources'); sources.replaceChildren();
+  for (const media of library) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'join-source'; button.setAttribute('aria-label', `Add ${media.name} to joined sequence`);
+    const image = document.createElement('img'); image.src = media.thumbnail; image.alt = '';
+    const label = document.createElement('span'); const name = document.createElement('strong'); name.textContent = media.name; const meta = document.createElement('small'); meta.textContent = `${time(media.duration)} · ${joinDraft.filter(c => c.mediaId === media.id).length} in sequence`; label.append(name, meta);
+    const add = document.createElement('span'); add.textContent = '+ Add'; button.append(image, label, add); button.onclick = () => { if (joinDraft.length >= 100) return toast('The timeline holds up to 100 clips.'); joinDraft.push(freshClip(media)); renderJoinBuilder(); }; sources.append(button);
+  }
+  if (!library.length) { const empty = document.createElement('p'); empty.className = 'join-empty'; empty.textContent = 'Import videos to build a sequence.'; sources.append(empty); }
+  const duration = joinDraft.reduce((sum, clip) => sum + length(clip), 0);
+  $('add-selected').disabled = joinDraft.length > 100;
+  $('add-selected').textContent = joinDraft.length ? `Apply ${joinDraft.length}-clip sequence` : 'Clear timeline';
+  $('join-selection').textContent = `${joinDraft.length} clip${joinDraft.length === 1 ? '' : 's'} · ${time(duration)} total · Clean cuts with no gaps. Music keeps its current timeline position.`;
 }
 function openJoin() {
-  stop(); joinSelection = []; $('join-list').replaceChildren();
-  for (const media of library) {
-    const row = document.createElement('label'); row.className = 'join-item';
-    const input = document.createElement('input'); input.type = 'checkbox'; input.value = media.id; input.setAttribute('aria-label', `Select ${media.name}`);
-    input.onchange = () => { if (input.checked) joinSelection.push(media.id); else joinSelection = joinSelection.filter(id => id !== media.id); updateJoinSelection(); };
-    const image = document.createElement('img'); image.src = media.thumbnail; image.alt = '';
-    const details = document.createElement('span'); details.className = 'join-item-details';
-    const name = document.createElement('strong'); name.textContent = media.name;
-    const meta = document.createElement('small'); const copies = project.clips.filter(c => c.mediaId === media.id).length;
-    meta.textContent = `${time(media.duration)} · ${media.width} × ${media.height}${copies ? ` · On timeline (${copies})` : ''}`;
-    details.append(name, meta); const order = document.createElement('span'); order.className = 'join-order';
-    row.append(input, image, details, order); $('join-list').append(row);
-  }
-  if (!library.length) { const empty = document.createElement('p'); empty.className = 'join-empty'; empty.textContent = 'Import two or more videos to get started. They will be added to the timeline together.'; $('join-list').append(empty); }
-  updateJoinSelection(); $('join-dialog').showModal();
+  stop(); joinDraft = project.clips.map(clip => structuredClone(clip)); renderJoinBuilder(); $('join-dialog').showModal();
 }
 $('timeline-join').onclick = openJoin;
 for (const id of ['close-join', 'cancel-join']) $(id).onclick = () => $('join-dialog').close();
 $('join-import').onclick = () => { $('join-dialog').close(); $('file-input').click(); };
-$('join-select-all').onclick = () => { joinSelection = library.map(m => m.id); updateJoinSelection(); };
-$('join-clear').onclick = () => { joinSelection = []; updateJoinSelection(); };
+$('join-select-all').onclick = () => { const used = new Set(joinDraft.map(clip => clip.mediaId)); for (const media of library) if (!used.has(media.id) && joinDraft.length < 100) joinDraft.push(freshClip(media)); renderJoinBuilder(); };
+$('join-clear').onclick = () => { joinDraft = []; renderJoinBuilder(); };
 $('add-selected').onclick = () => {
-  const items = joinSelection.map(id => library.find(m => m.id === id)).filter(Boolean); if (!items.length) return;
-  $('join-dialog').close(); const count = addClips(items);
-  toast(`${count} videos added in your selected order. Export saves the whole timeline as one MP4.`);
+  remember(); project.clips = joinDraft.map(clip => structuredClone(clip)); delete project.emptyByChoice; $('join-dialog').close(); selectClip(project.clips.length ? 0 : -1); renderTimeline(); save();
+  toast(project.clips.length ? `${project.clips.length} clips joined in this exact order. Play all to review every cut.` : 'Timeline cleared. Undo restores the previous sequence.');
 };
 
 function setInspector(tab) {
