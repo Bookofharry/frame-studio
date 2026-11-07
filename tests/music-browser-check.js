@@ -82,8 +82,10 @@ async function main() {
     await page.locator('.music-clip').nth(1).click();
     await page.locator('#music-remove').click(); assert.equal(await page.locator('.music-clip').count(), 1);
     await page.locator('#undo').click(); assert.equal(await page.locator('.music-clip').count(), 2);
-    const saved = page.waitForEvent('download'); await page.locator('#save-project').click();
+    await page.locator('#save-project').click(); await page.locator('#load-project').click();
+    const saved = page.waitForEvent('download'); await page.locator('#download-project-backup').click();
     const projectPath = path.join(fixtures, 'music-project.frame.json'); await (await saved).saveAs(projectPath);
+    await page.locator('#close-projects').click();
     const data = JSON.parse(fs.readFileSync(projectPath)); assert.equal(data.music.length, 2); assert.equal(data.music[0].volume, 0.3);
     await page.locator('#new-project').click(); await page.locator('#confirm-new').click();
     assert.equal(await page.locator('.music-clip').count(), 0); assert.equal(await page.locator('.music-card').count(), 0);

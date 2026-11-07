@@ -3,11 +3,15 @@ let video = $('video'), preloadVideo = $('video-preload');
 const nextViewport = document.createElement('div'); nextViewport.id = 'next-viewport';
 $('video-frame').insertBefore(nextViewport, $('title-preview')); nextViewport.append(preloadVideo);
 const cropFor = clip => clip.crop || FrameCrop.full(mediaFor(clip));
-const defaults = () => ({ name: 'Untitled project', mediaIds: [], clips: [], music: [], settings: { aspect: 'source', text: '', resolution: 'source', fps: 'source', quality: '18', transitionDuration: 0.35 } });
+const defaults = () => ({ id: crypto.randomUUID(), name: 'Untitled project', mediaIds: [], clips: [], music: [], settings: { aspect: 'source', text: '', resolution: 'source', fps: 'source', quality: '18', transitionDuration: 0.35 } });
 let project = defaults(), library = [], allMedia = [], selected = -1, history = [], future = [], playing = false, importing = false, jobId = null, pollTimer, toastTimer;
 let pixelsPerSecond = 60, timelineGesture = null, gestureMoved = false, previewFrame = 0;
 let previewGeneration = 0;
 try { const saved = JSON.parse(localStorage.getItem('frame-project')); if (saved?.clips && saved?.settings) project = saved; } catch {}
+project.id ||= crypto.randomUUID();
+const projectIndexKey = 'frame-project-index';
+const storedProjectKey = id => `frame-project-${id}`;
+function projectIndex() { try { const entries = JSON.parse(localStorage.getItem(projectIndexKey)); return Array.isArray(entries) ? entries.filter(entry => typeof entry?.id === 'string') : []; } catch { return []; } }
 const mediaFor = clip => library.find(m => m.id === clip?.mediaId);
 function refreshProjectLibrary() {
   project.music ||= [];
@@ -33,7 +37,17 @@ const total = () => project.clips.reduce((sum, c, index) => sum + length(c) - tr
 const offset = index => project.clips.slice(0, index).reduce((sum, c, i) => sum + length(c) - transitionLength(i), 0);
 function time(seconds, precision = 1) { const scale = 10 ** precision; const ticks = Math.round(Math.max(0, seconds || 0) * scale); return `${String(Math.floor(ticks / (60 * scale))).padStart(2, '0')}:${((ticks % (60 * scale)) / scale).toFixed(precision).padStart(3 + precision, '0')}`; }
 function toast(message) { $('toast').textContent = message; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 4500); }
-function save() { try { localStorage.setItem('frame-project', JSON.stringify(project)); $('save-state').textContent = '● Saved on this device'; } catch { $('save-state').textContent = 'Save project to keep your edits'; } }
+function save() {
+  try {
+    const snapshot = JSON.stringify(project);
+    localStorage.setItem('frame-project', snapshot);
+    localStorage.setItem(storedProjectKey(project.id), snapshot);
+    const entries = projectIndex().filter(entry => entry.id !== project.id);
+    entries.unshift({ id: project.id, name: project.name, updatedAt: Date.now(), clipCount: project.clips.length, mediaCount: project.mediaIds?.length || 0 });
+    localStorage.setItem(projectIndexKey, JSON.stringify(entries));
+    $('save-state').textContent = '● Saved on this device';
+  } catch { $('save-state').textContent = 'Could not save project on this device'; }
+}
 function remember() { history.push(JSON.stringify(project)); if (history.length > 60) history.shift(); future = []; updateHistoryButtons(); }
 function updateHistoryButtons() { $('undo').disabled = !history.length; $('redo').disabled = !future.length; }
 async function api(url, options) { const response = await fetch(url, options); const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Something went wrong. Please try again.'); return result; }
@@ -376,11 +390,41 @@ $('duplicate').onclick = () => { if (!current() || project.clips.length >= 100) 
 $('aspect').onchange = e => { remember(); project.settings.aspect = e.target.value; applyPreview(); save(); renderTimeline(); };
 $('title-text').onfocus = remember; $('title-text').oninput = e => { project.settings.text = e.target.value; applyPreview(); save(); $('undo').disabled = !history.length; };
 $('project-name').onchange = e => { project.name = e.target.value.trim() || 'Untitled project'; save(); };
-$('save-project').onclick = () => {
+function downloadProjectBackup() {
   const url = URL.createObjectURL(new Blob([JSON.stringify({ version: 1, ...project }, null, 2)], { type: 'application/json' }));
-  const link = document.createElement('a'); link.href = url; link.download = `${project.name.replace(/[^a-z0-9 _-]/gi, '') || 'Frame'}.frame.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); toast('Project saved. Keep the app’s data folder with its source videos.');
-};
-$('load-project').onclick = () => $('project-input').click();
+  const link = document.createElement('a'); link.href = url; link.download = `${project.name.replace(/[^a-z0-9 _-]/gi, '') || 'Frame'}.frame.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); toast('Backup downloaded. Keep the app’s data folder with its source videos.');
+}
+$('save-project').onclick = () => { project.name = $('project-name').value.trim() || 'Untitled project'; $('project-name').value = project.name; save(); toast('Project saved. Open Projects to switch between edits.'); };
+function renderProjects() {
+  const list = $('projects-list'); list.replaceChildren();
+  const entries = projectIndex().filter(entry => localStorage.getItem(storedProjectKey(entry.id)));
+  for (const entry of entries) {
+    const row = document.createElement('article'); row.className = 'project-row'; row.dataset.projectId = entry.id; row.classList.toggle('active', entry.id === project.id);
+    const details = document.createElement('div'); details.className = 'project-row-details';
+    const name = document.createElement('strong'); name.textContent = entry.name || 'Untitled project';
+    const meta = document.createElement('small'); meta.textContent = `${entry.clipCount || 0} clip${entry.clipCount === 1 ? '' : 's'} · ${entry.mediaCount || 0} media · ${new Date(entry.updatedAt || Date.now()).toLocaleString()}`;
+    details.append(name, meta);
+    const action = document.createElement('button'); action.className = entry.id === project.id ? 'mini' : 'secondary'; action.textContent = entry.id === project.id ? 'Current' : 'Open'; action.disabled = entry.id === project.id; action.setAttribute('aria-label', `Open project ${entry.name || 'Untitled project'}`); action.onclick = () => openStoredProject(entry.id);
+    row.append(details, action); list.append(row);
+  }
+  if (!entries.length) { const empty = document.createElement('p'); empty.className = 'helper'; empty.textContent = 'Your projects will appear here after you create one.'; list.append(empty); }
+}
+function openStoredProject(id) {
+  if (importing) return toast('Wait for the import to finish before switching projects.');
+  try {
+    const saved = JSON.parse(localStorage.getItem(storedProjectKey(id)));
+    if (!saved || saved.id !== id || !Array.isArray(saved.clips) || !saved.settings) throw new Error('This project could not be opened.');
+    save(); stop(); project = saved; selected = -1; history = []; future = []; updateHistoryButtons();
+    project.music = (Array.isArray(project.music) ? project.music : []).filter(clip => allMedia.some(media => media.id === clip.mediaId && media.type === 'audio'));
+    const existing = project.clips.length; project.clips = project.clips.filter(clip => allMedia.some(media => media.id === clip.mediaId && media.type !== 'audio'));
+    $('media-search').value = ''; restore(); $('projects-dialog').close();
+    toast(existing === project.clips.length ? `Opened ${project.name}.` : `Opened ${project.name}. Missing source videos were removed.`);
+  } catch (error) { toast(error.message); }
+}
+$('load-project').onclick = () => { if (importing) return toast('Wait for the import to finish before switching projects.'); save(); renderProjects(); $('projects-dialog').showModal(); };
+for (const id of ['close-projects', 'close-projects-bottom']) $(id).onclick = () => $('projects-dialog').close();
+$('import-project-backup').onclick = () => { $('projects-dialog').close(); $('project-input').click(); };
+$('download-project-backup').onclick = downloadProjectBackup;
 $('project-input').onchange = async e => {
   try {
     const file = e.target.files[0]; if (!file) return;
@@ -392,11 +436,11 @@ $('project-input').onchange = async e => {
     validateMusic(data.music === undefined ? [] : data.music);
     for (const clip of data.clips) { const m = allMedia.find(media => media.id === clip.mediaId); if (m && clip.crop != null && !FrameCrop.valid(clip.crop, m)) throw new Error('This project contains an invalid crop.'); if (!m || m.type === 'audio') throw new Error('This project needs videos that are not in this computer’s library.'); for (const k of ['start', 'end', 'speed', 'volume', 'brightness', 'contrast', 'saturation']) if (!Number.isFinite(clip[k])) throw new Error('This project contains invalid clip settings.'); if (clip.start < 0 || clip.end > m.duration || clip.end - clip.start < 0.08 || clip.speed < 0.5 || clip.speed > 7 || clip.volume < 0 || clip.volume > 1 || Math.abs(clip.brightness) > 0.5 || clip.contrast < 0.5 || clip.contrast > 2 || clip.saturation < 0 || clip.saturation > 2) throw new Error('This project contains invalid clip settings.'); }
     if (!['source', '16:9', '9:16', '1:1'].includes(data.settings.aspect) || typeof data.settings.text !== 'string') throw new Error('This project contains invalid canvas settings.');
-    remember(); project = { name: data.name.slice(0, 60), mediaIds: data.mediaIds || data.clips.map(clip => clip.mediaId), clips: data.clips, music: data.music || [], settings: { ...defaults().settings, ...data.settings, text: data.settings.text.slice(0, 120) } }; $('media-search').value = ''; restore(); toast('Project opened.');
+    remember(); save(); project = { id: crypto.randomUUID(), name: data.name.slice(0, 60), mediaIds: data.mediaIds || data.clips.map(clip => clip.mediaId), clips: data.clips, music: data.music || [], settings: { ...defaults().settings, ...data.settings, text: data.settings.text.slice(0, 120) } }; $('media-search').value = ''; restore(); toast('Project opened and added to Projects.');
   } catch (error) { toast(error.message); } finally { e.target.value = ''; }
 };
-$('new-project').onclick = () => $('new-dialog').showModal(); $('keep-project').onclick = () => $('new-dialog').close();
-$('confirm-new').onclick = () => { if (importing) return toast('Wait for the import to finish before starting a new project.'); remember(); project = defaults(); selected = -1; $('media-search').value = ''; video.dataset.mediaId = ''; restore(); $('new-dialog').close(); };
+$('new-project').onclick = () => { $('new-project-name').value = `Untitled project ${projectIndex().length + 1}`; $('new-dialog').showModal(); }; $('keep-project').onclick = () => $('new-dialog').close();
+$('confirm-new').onclick = () => { if (importing) return toast('Wait for the import to finish before starting a new project.'); remember(); save(); project = defaults(); project.name = $('new-project-name').value.trim() || 'Untitled project'; selected = -1; $('media-search').value = ''; video.dataset.mediaId = ''; restore(); $('new-dialog').close(); };
 $('open-export').onclick = () => { if (!project.clips.length) return toast('Add a video to your timeline first.'); stop(); $('export-credit-note').hidden = !project.music.some(c => musicSource(c)?.catalog?.attributionRequired && c.volume > 0 && c.at < total()); $('export-description').textContent = `${project.clips.length} clip${project.clips.length === 1 ? '' : 's'} · ${time(total())} total. All timeline clips will be joined in order into one MP4 video.`; $('export-dialog').showModal(); };
 $('close-export').onclick = () => $('export-dialog').close();
 function exportBusy(busy) { for (const key of ['resolution', 'fps', 'quality']) $(key).disabled = busy; $('start-export').hidden = busy; $('cancel-export').hidden = !busy; }
