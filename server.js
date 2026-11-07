@@ -181,6 +181,7 @@ function validateProject(body) {
   const quality = ['18', '20', '23'].includes(String(settings.quality)) ? String(settings.quality) : '18';
   const fps = ['source', '24', '30', '60'].includes(String(settings.fps)) ? String(settings.fps) : 'source';
   const text = String(settings.text || '').slice(0, 120);
+  const transitionDuration = number(settings.transitionDuration, 0.35, 0, 1.5);
   if (body.music !== undefined && (!Array.isArray(body.music) || body.music.length > 20)) throw new Error('Use up to 20 music clips.');
   const music = (body.music || []).map(c => {
     const media = library.find(m => m.id === c.mediaId && m.type === 'audio');
@@ -190,7 +191,15 @@ function validateProject(body) {
     return { media, start, end, at: number(c.at, 0, 0, 86400), volume: number(c.volume, 0.5, 0, 1) };
   });
   catalog.assertLicensed(music.map(clip => clip.media));
-  return { clips, music, settings: { resolution, aspect, quality, fps, text } };
+  return { clips, music, settings: { resolution, aspect, quality, fps, text, transitionDuration } };
+}
+function overlap(clips, index, duration) {
+  if (!duration || index < 0 || index >= clips.length - 1) return 0;
+  if (clips[index].media.id === clips[index + 1].media.id && Math.abs(clips[index].end - clips[index + 1].start) < 0.001) return 0;
+  const a = (clips[index].end - clips[index].start) / clips[index].speed;
+  const b = (clips[index + 1].end - clips[index + 1].start) / clips[index + 1].speed;
+  const value = Math.min(duration, a / 3, b / 3);
+  return value >= 0.05 ? value : 0;
 }
 function dimensions(media, settings) {
   let ratio = media.width / media.height;
@@ -209,7 +218,7 @@ async function render(job, project) {
   if (settings.text) fs.writeFileSync(path.join(work, 'title.txt'), settings.text);
   const font = process.platform === 'win32' ? 'C:/Windows/Fonts/arial.ttf' : '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
   if (settings.text) fs.copyFileSync(font, path.join(work, 'font.ttf'));
-  const total = clips.reduce((sum, c) => sum + (c.end - c.start) / c.speed, 0);
+  const total = clips.reduce((sum, c, index) => sum + (c.end - c.start) / c.speed - overlap(clips, index, settings.transitionDuration), 0);
   let completed = 0;
   const run = (args, duration, progressWeight = 1) => new Promise((resolve, reject) => {
     if (job.status === 'cancelled') return reject(new Error('Export cancelled'));
@@ -247,10 +256,32 @@ async function render(job, project) {
       completed += duration;
     }
     job.message = 'Finishing your MP4'; job.progress = 96;
-    fs.writeFileSync(path.join(work, 'clips.txt'), clips.map((_, i) => `file '${i}.mp4'`).join('\n'));
     const output = path.join(root, 'exports', `${job.id}.mp4`);
     const audible = music.filter(c => c.at < total && c.volume > 0);
-    await run(['-f', 'concat', '-safe', '0', '-i', 'clips.txt', '-c', 'copy', '-movflags', '+faststart', audible.length ? 'joined.mp4' : output], total, 0);
+    const joined = audible.length ? 'joined.mp4' : output;
+    if (clips.length > 1 && settings.transitionDuration > 0) {
+      const args = clips.flatMap((_, index) => ['-i', `${index}.mp4`]);
+      const filters = clips.map((_, index) => `[${index}:v]settb=AVTB,setpts=PTS-STARTPTS[base${index}]`);
+      let elapsed = (clips[0].end - clips[0].start) / clips[0].speed;
+      for (let index = 1; index < clips.length; index++) {
+        const duration = overlap(clips, index - 1, settings.transitionDuration);
+        const offset = Math.max(0, elapsed - duration);
+        const v = index === 1 ? 'base0' : `v${index - 1}`, a = index === 1 ? '0:a' : `a${index - 1}`;
+        if (duration) {
+          filters.push(`[${v}][base${index}]xfade=transition=fade:duration=${duration}:offset=${offset}[v${index}]`);
+          filters.push(`[${a}][${index}:a]acrossfade=d=${duration}:c1=tri:c2=tri[a${index}]`);
+        } else {
+          filters.push(`[${v}][base${index}]concat=n=2:v=1:a=0[v${index}]`);
+          filters.push(`[${a}][${index}:a]concat=n=2:v=0:a=1[a${index}]`);
+        }
+        elapsed += (clips[index].end - clips[index].start) / clips[index].speed - duration;
+      }
+      args.push('-filter_complex', filters.join(';'), '-map', `[v${clips.length - 1}]`, '-map', `[a${clips.length - 1}]`, '-t', String(total), '-c:v', 'libx264', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', joined);
+      await run(args, total, 0);
+    } else {
+      fs.writeFileSync(path.join(work, 'clips.txt'), clips.map((_, i) => `file '${i}.mp4'`).join('\n'));
+      await run(['-f', 'concat', '-safe', '0', '-i', 'clips.txt', '-c', 'copy', '-movflags', '+faststart', joined], total, 0);
+    }
     if (audible.length) {
       job.message = 'Mixing music and original sound';
       const args = ['-i', 'joined.mp4'];

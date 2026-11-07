@@ -38,7 +38,7 @@ test('renders trims, speed, colors, text, joined clips and silence into a playab
   assert.equal(job.status, 'complete', JSON.stringify(job)); assert.equal(job.progress, 100);
   const download = await fetch(`${base}/api/exports/${id}/download`); assert.equal(download.status, 200);
   const output = path.join(fixtures, 'verified-export.mp4'); fs.writeFileSync(output, Buffer.from(await download.arrayBuffer()));
-  const info = await probe(output); const video = info.streams.find(s => s.codec_type === 'video'); assert.equal(video.codec_name, 'h264'); assert.equal(video.width, 1280); assert.equal(video.height, 720); assert.equal(video.avg_frame_rate, '30/1'); assert.ok(Math.abs(Number(info.format.duration) - 3) < 0.2); assert.ok(info.streams.some(s => s.codec_type === 'audio' && s.codec_name === 'aac'));
+  const info = await probe(output); const video = info.streams.find(s => s.codec_type === 'video'); assert.equal(video.codec_name, 'h264'); assert.equal(video.width, 1280); assert.equal(video.height, 720); assert.equal(video.avg_frame_rate, '30/1'); assert.ok(Math.abs(Number(info.format.duration) - (3 - 1 / 3)) < 0.12); assert.ok(info.streams.some(s => s.codec_type === 'audio' && s.codec_name === 'aac'));
 });
 test('blocks cross-origin local requests', async () => {
   const response = await fetch(`${base}/api/library`, { headers: { Origin: 'https://example.com' } }); assert.equal(response.status, 403);
@@ -77,12 +77,20 @@ test('joins three different videos into one MP4 in the selected order', { timeou
   for (let i = 0; i < 120; i++) { job = await (await fetch(`${base}/api/exports/${id}`)).json(); if (job.status !== 'rendering') break; await new Promise(resolve => setTimeout(resolve, 250)); }
   assert.equal(job.status, 'complete', JSON.stringify(job));
   const result = path.join(fixtures, 'verified-join.mp4'); fs.writeFileSync(result, Buffer.from(await (await fetch(`${base}/api/exports/${id}/download`)).arrayBuffer()));
-  const info = await probe(result); assert.ok(Math.abs(Number(info.format.duration) - 3) < 0.2);
+  const info = await probe(result); assert.ok(Math.abs(Number(info.format.duration) - (3 - 2 / 3)) < 0.12);
   for (const [index, channel] of [2, 0, 1].entries()) {
-    const pixel = execFileSync(ffmpeg, ['-v', 'error', '-ss', String(index + 0.5), '-i', result, '-frames:v', '1', '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { windowsHide: true });
+    const pixel = execFileSync(ffmpeg, ['-v', 'error', '-ss', String(0.3 + index * 0.83), '-i', result, '-frames:v', '1', '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { windowsHide: true });
     assert.equal(pixel.length, 3); assert.ok(pixel[channel] > 220, `Clip ${index + 1} has its expected color`);
     for (let c = 0; c < 3; c++) if (c !== channel) assert.ok(pixel[c] < 30, `Clip ${index + 1} contains only the expected source`);
   }
+  const blended = execFileSync(ffmpeg, ['-v', 'error', '-ss', '0.83', '-i', result, '-frames:v', '1', '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { windowsHide: true });
+  assert.ok(blended[0] > 60 && blended[2] > 60 && blended[0] < 200 && blended[2] < 200, 'The boundary blends blue and red frames');
+  const hardCut = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips, settings: { resolution: 'source', aspect: 'source', transitionDuration: 0 } }) });
+  assert.equal(hardCut.status, 200); const hardCutId = (await hardCut.json()).id; let hardCutJob;
+  for (let i = 0; i < 120; i++) { hardCutJob = await (await fetch(`${base}/api/exports/${hardCutId}`)).json(); if (hardCutJob.status !== 'rendering') break; await new Promise(resolve => setTimeout(resolve, 250)); }
+  assert.equal(hardCutJob.status, 'complete', JSON.stringify(hardCutJob));
+  const hardCutPath = path.join(fixtures, 'verified-hard-cut.mp4'); fs.writeFileSync(hardCutPath, Buffer.from(await (await fetch(`${base}/api/exports/${hardCutId}/download`)).arrayBuffer()));
+  assert.ok(Math.abs(Number((await probe(hardCutPath)).format.duration) - 3) < 0.12, 'Choosing hard cuts preserves the full source duration');
 });
 test('7x export turns seven seconds into one second with audible audio', { timeout: 90000 }, async () => {
   const source = path.join(fixtures, 'speed-seven.mp4');
@@ -131,7 +139,7 @@ test('mixes trimmed music at the chosen time and volume while retaining source s
     clips: [{ mediaId: imported[0].id }, { mediaId: imported[1].id, end: 1 }],
     music: [
       { mediaId: soundtrack.id, start: 1.2, end: 2.2, at: 0.5, volume: 0.25 },
-      { mediaId: soundtrack.id, start: 1.2, end: 2.2, at: 3.5, volume: 0.5 },
+      { mediaId: soundtrack.id, start: 1.2, end: 2.2, at: 3.35, volume: 0.5 },
       { mediaId: soundtrack.id, start: 1, end: 2, at: 2, volume: 0 },
       { mediaId: soundtrack.id, at: 8, volume: 1 }
     ]
@@ -142,7 +150,7 @@ test('mixes trimmed music at the chosen time and volume while retaining source s
   assert.equal(job.status, 'complete', JSON.stringify(job));
   const output = path.join(fixtures, 'verified-music.mp4');
   fs.writeFileSync(output, Buffer.from(await (await fetch(`${base}/api/exports/${id}/download`)).arrayBuffer()));
-  const info = await probe(output); assert.ok(Math.abs(Number(info.format.duration) - 4) < 0.12, 'Music never extends the video');
+  const info = await probe(output); assert.ok(Math.abs(Number(info.format.duration) - (4 - 1 / 3)) < 0.12, 'Music never extends the dissolved video');
   const pcm = execFileSync(ffmpeg, ['-v', 'error', '-i', output, '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', 'pipe:1'], { windowsHide: true });
   function amplitude(at, hz) {
     let real = 0, imag = 0; const n = 1200, start = Math.round(at * 8000);
@@ -155,7 +163,7 @@ test('mixes trimmed music at the chosen time and volume while retaining source s
   assert.ok(amplitude(1.8, 880) < 30, 'Music stops at its trim out point');
   assert.ok(amplitude(2.3, 880) < 30, 'Muted music stays silent');
   assert.ok(amplitude(3.2, 440) < 30 && amplitude(3.2, 880) < 30, 'Silent video has silence between music clips');
-  assert.ok(amplitude(3.7, 880) > amplitude(0.7, 880) * 1.7, 'Second music clip uses its own volume and survives the video cut');
+  assert.ok(amplitude(3.45, 880) > amplitude(0.7, 880) * 1.7, 'Second music clip uses its own volume and survives the video cut');
 });
 
 test('adds real catalog music once and supplies credits for the exported video', { timeout: 90000 }, async () => {

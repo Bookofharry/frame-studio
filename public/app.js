@@ -1,10 +1,12 @@
 const $ = id => document.getElementById(id);
-const video = $('video');
-const preloadVideo = $('video-preload');
+let video = $('video'), preloadVideo = $('video-preload');
+const nextViewport = document.createElement('div'); nextViewport.id = 'next-viewport';
+$('video-frame').insertBefore(nextViewport, $('title-preview')); nextViewport.append(preloadVideo);
 const cropFor = clip => clip.crop || FrameCrop.full(mediaFor(clip));
-const defaults = () => ({ name: 'Untitled project', mediaIds: [], clips: [], music: [], settings: { aspect: 'source', text: '', resolution: 'source', fps: 'source', quality: '18' } });
+const defaults = () => ({ name: 'Untitled project', mediaIds: [], clips: [], music: [], settings: { aspect: 'source', text: '', resolution: 'source', fps: 'source', quality: '18', transitionDuration: 0.35 } });
 let project = defaults(), library = [], allMedia = [], selected = -1, history = [], future = [], playing = false, importing = false, jobId = null, pollTimer, toastTimer;
 let pixelsPerSecond = 60, timelineGesture = null, gestureMoved = false, previewFrame = 0;
+let previewGeneration = 0;
 try { const saved = JSON.parse(localStorage.getItem('frame-project')); if (saved?.clips && saved?.settings) project = saved; } catch {}
 const mediaFor = clip => library.find(m => m.id === clip?.mediaId);
 function refreshProjectLibrary() {
@@ -18,8 +20,16 @@ function refreshProjectLibrary() {
 }
 const current = () => project.clips[selected];
 const length = clip => (clip.end - clip.start) / clip.speed;
-const total = () => project.clips.reduce((sum, c) => sum + length(c), 0);
-const offset = index => project.clips.slice(0, index).reduce((sum, c) => sum + length(c), 0);
+const transitionFor = (clips, index, duration) => {
+  if (index < 0 || index >= clips.length - 1 || !Number(duration)) return 0;
+  const a = clips[index], b = clips[index + 1];
+  if (a.mediaId === b.mediaId && Math.abs(a.end - b.start) < 0.001) return 0;
+  const overlap = Math.min(Number(duration), length(a) / 3, length(b) / 3);
+  return overlap >= 0.05 ? overlap : 0;
+};
+const transitionLength = (index, clips = project.clips) => transitionFor(clips, index, project.settings.transitionDuration ?? 0.35);
+const total = () => project.clips.reduce((sum, c, index) => sum + length(c) - transitionLength(index), 0);
+const offset = index => project.clips.slice(0, index).reduce((sum, c, i) => sum + length(c) - transitionLength(i), 0);
 function time(seconds, precision = 1) { const scale = 10 ** precision; const ticks = Math.round(Math.max(0, seconds || 0) * scale); return `${String(Math.floor(ticks / (60 * scale))).padStart(2, '0')}:${((ticks % (60 * scale)) / scale).toFixed(precision).padStart(3 + precision, '0')}`; }
 function toast(message) { $('toast').textContent = message; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 4500); }
 function save() { try { localStorage.setItem('frame-project', JSON.stringify(project)); $('save-state').textContent = '● Saved on this device'; } catch { $('save-state').textContent = 'Save project to keep your edits'; } }
@@ -123,6 +133,7 @@ function renderTimeline() {
   project.clips.forEach((clip, index) => {
     const media = mediaFor(clip); const button = document.createElement('div'); button.className = `timeline-clip${index === selected ? ' selected' : ''}`; button.setAttribute('role', 'button'); button.tabIndex = 0; button.dataset.clipId = clip.id;
     button.style.width = `${Math.max(1, length(clip) * pixelsPerSecond)}px`;
+    if (index) button.style.marginLeft = `${-transitionLength(index - 1) * pixelsPerSecond}px`;
     const body = document.createElement('div'); body.className = 'clip-body';
     if (media) body.style.backgroundImage = `url("${media.thumbnail}")`;
     const title = document.createElement('strong'); title.textContent = `${String(index + 1).padStart(2, '0')}  ${media?.name || 'Missing source'}`;
@@ -154,28 +165,36 @@ function renderTimeline() {
   $('play-all').disabled = !project.clips.length;
   $('timeline-earlier').disabled = selected <= 0;
   $('timeline-later').disabled = selected < 0 || selected >= project.clips.length - 1;
-  $('join-summary').textContent = project.clips.length ? `${time(total())} total · All clips export as one video` : 'Drop media onto the track to start';
+  $('join-summary').textContent = project.clips.length ? `${time(total())} total · ${Number(project.settings.transitionDuration ?? 0.35) ? 'Cross dissolve' : 'Hard cuts'} · One exported video` : 'Drop media onto the track to start';
   syncLibraryState();
   renderMusic();
   updateTime();
 }
-function stop() { playing = false; video.pause(); pauseMusic(); stopCatalogPreview(); $('play').textContent = '▶'; $('play').setAttribute('aria-label', 'Play timeline'); }
+function stop() { playing = false; previewGeneration++; cancelAnimationFrame(previewFrame); video.pause(); preloadVideo.pause(); pauseMusic(); stopCatalogPreview(); $('play').textContent = '▶'; $('play').setAttribute('aria-label', 'Play timeline'); }
 function preloadFollowing(index) {
   const media = mediaFor(project.clips[index + 1]);
-  if (!media) { preloadVideo.removeAttribute('src'); preloadVideo.dataset.mediaId = ''; return; }
+  if (!media) { preloadVideo.pause(); preloadVideo.removeAttribute('src'); preloadVideo.dataset.mediaId = ''; $('next-viewport').style.opacity = 0; return; }
   if (preloadVideo.dataset.mediaId === media.id) return;
-  preloadVideo.dataset.mediaId = media.id; preloadVideo.src = media.url; preloadVideo.load();
+  preloadVideo.pause(); preloadVideo.dataset.mediaId = media.id; preloadVideo.src = media.url;
+  preloadVideo.onloadedmetadata = () => { const clip = project.clips[selected + 1]; if (clip?.mediaId === media.id) { preloadVideo.currentTime = clip.start; updateTime(); } };
+  preloadVideo.load();
 }
-function selectClip(index, at, resume = false) {
-  if (!resume) stop();
-  selectedMusicId = '';
-  selected = index; const clip = current(), media = mediaFor(clip);
+function showSelectedClip() {
+  const clip = current(), media = mediaFor(clip);
   $('clip-controls').disabled = !clip; $('preview-empty').hidden = !!clip;
   $('video-frame').style.display = clip ? 'block' : 'none';
   $('selected-name').textContent = media?.name || 'Select a clip to get started';
   $('source-label').textContent = media ? `${media.width} × ${media.height} · ${Math.round(media.fps)} fps` : 'No clip selected';
-  $('editing-hint').textContent = media ? `Clip ${index + 1} · ${time(length(clip))} · ${clipState(clip, media)}` : 'Select a timeline clip to edit';
-  $('selection-badge').textContent = clip ? `Clip ${index + 1}` : 'Project';
+  $('editing-hint').textContent = media ? `Clip ${selected + 1} · ${time(length(clip))} · ${clipState(clip, media)}` : 'Select a timeline clip to edit';
+  $('selection-badge').textContent = clip ? `Clip ${selected + 1}` : 'Project';
+}
+function selectClip(index, at, resume = false) {
+  if (!resume) stop();
+  video.muted = false;
+  preloadVideo.pause(); $('next-viewport').style.opacity = 0;
+  selectedMusicId = '';
+  selected = index; const clip = current(), media = mediaFor(clip);
+  showSelectedClip();
   if (!clip || !media) { video.dataset.mediaId = ''; video.removeAttribute('src'); video.load(); preloadFollowing(-1); updateTime(); return; }
   preloadFollowing(index);
   const seek = at === undefined ? clip.start : at;
@@ -204,16 +223,35 @@ function applyPreview() {
   const stage = $('preview-stage'); let width = stage.clientWidth, height = width / ratio;
   if (height > stage.clientHeight) { height = stage.clientHeight; width = height * ratio; }
   $('video-frame').style.width = `${width}px`; $('video-frame').style.height = `${height}px`;
-  const crop = cropFor(clip);
-  const scale = Math.min(width / crop.width, height / crop.height);
-  const viewport = $('crop-viewport');
-  Object.assign(viewport.style, { width: `${crop.width * scale}px`, height: `${crop.height * scale}px`, left: `${(width - crop.width * scale) / 2}px`, top: `${(height - crop.height * scale) / 2}px` });
-  Object.assign(video.style, { width: `${media.width * scale}px`, height: `${media.height * scale}px`, left: `${-crop.x * scale}px`, top: `${-crop.y * scale}px` });
+  function positionPlayer(player, viewport, item) {
+    const source = mediaFor(item), crop = cropFor(item);
+    const scale = Math.min(width / crop.width, height / crop.height);
+    Object.assign(viewport.style, { width: `${crop.width * scale}px`, height: `${crop.height * scale}px`, left: `${(width - crop.width * scale) / 2}px`, top: `${(height - crop.height * scale) / 2}px` });
+    Object.assign(player.style, { width: `${source.width * scale}px`, height: `${source.height * scale}px`, left: `${-crop.x * scale}px`, top: `${-crop.y * scale}px`, filter: `brightness(${1 + item.brightness}) contrast(${item.contrast}) saturate(${item.saturation})` });
+  }
+  positionPlayer(video, $('crop-viewport'), clip);
+  if (project.clips[selected + 1] && mediaFor(project.clips[selected + 1])) positionPlayer(preloadVideo, $('next-viewport'), project.clips[selected + 1]);
   $('title-preview').textContent = project.settings.text; $('title-preview').style.fontSize = `${height * 0.045}px`;
   $('player-format').textContent = project.settings.aspect === 'source' ? 'Original' : project.settings.aspect;
 }
 function updateTime() {
   const clip = current(); const position = clip ? offset(selected) + Math.max(0, Math.min(clip.end, video.currentTime || clip.start) - clip.start) / clip.speed : 0;
+  const fade = transitionLength(selected), progress = clip && fade ? Math.max(0, Math.min(1, (position - (offset(selected) + length(clip) - fade)) / fade)) : 0;
+  const next = project.clips[selected + 1];
+  if (next && fade && progress > 0 && preloadVideo.readyState >= 1) {
+    const target = next.start + fade * progress * next.speed;
+    if (Math.abs(preloadVideo.currentTime - target) > (playing ? 0.12 : 0.02)) preloadVideo.currentTime = target;
+    preloadVideo.playbackRate = next.speed;
+    preloadVideo.muted = false;
+    preloadVideo.volume = next.volume * progress;
+    video.volume = clip.volume * (1 - progress);
+    $('next-viewport').style.opacity = progress;
+    if (playing && preloadVideo.paused && !preloadVideo.seeking) preloadVideo.play().catch(() => {});
+  } else {
+    $('next-viewport').style.opacity = 0;
+    if (!preloadVideo.paused) preloadVideo.pause();
+    if (clip) video.volume = clip.volume;
+  }
   $('current-time').textContent = time(position); $('scrubber').value = position;
   $('timeline-playhead').style.left = `${position * pixelsPerSecond}px`;
   for (const id of ['ruler', 'timeline-playhead']) { $(id).setAttribute('aria-valuemax', total()); $(id).setAttribute('aria-valuenow', position); $(id).setAttribute('aria-valuetext', time(position, 2)); }
@@ -221,14 +259,28 @@ function updateTime() {
   syncMusic(position);
 }
 function seekTimeline(position) {
-  let start = 0;
-  for (let index = 0; index < project.clips.length; index++) { const clip = project.clips[index]; if (position < start + length(clip) || index === project.clips.length - 1) { selectClip(index, clip.start + (position - start) * clip.speed, playing); renderTimeline(); return; } start += length(clip); }
+  for (let index = 0; index < project.clips.length; index++) { const clip = project.clips[index], start = offset(index); if (position < start + length(clip) || index === project.clips.length - 1) { selectClip(index, clip.start + (position - start) * clip.speed, playing); renderTimeline(); return; } }
 }
-function nextClip() { if (!playing) return; if (selected < project.clips.length - 1) { selectClip(selected + 1, undefined, true); renderTimeline(); } else { stop(); updateTime(); } }
+function nextClip() {
+  if (!playing) return;
+  if (selected >= project.clips.length - 1) { stop(); updateTime(); return; }
+  const nextIndex = selected + 1, next = project.clips[nextIndex];
+  if (preloadVideo.dataset.mediaId === next.mediaId && preloadVideo.readyState >= 2 && !preloadVideo.paused) {
+    const oldVideo = video, oldViewport = $('crop-viewport'), activeViewport = $('next-viewport');
+    oldVideo.pause(); oldVideo.muted = true; oldVideo.id = 'video-preload'; preloadVideo.id = 'video';
+    oldViewport.id = 'next-viewport'; activeViewport.id = 'crop-viewport';
+    video = preloadVideo; preloadVideo = oldVideo; video.muted = false; selected = nextIndex;
+    video.volume = next.volume; activeViewport.style.opacity = 1; oldViewport.style.opacity = 0;
+    selectedMusicId = ''; showSelectedClip(); renderControls(); preloadFollowing(nextIndex); applyPreview(); renderTimeline();
+  } else { selectClip(nextIndex, next.start + transitionLength(nextIndex - 1) * next.speed, true); renderTimeline(); }
+}
 function checkClipEnd() { const clip = current(); if (playing && clip && !video.seeking && video.dataset.mediaId === clip.mediaId && video.currentTime >= clip.end - 0.015) nextClip(); }
-video.addEventListener('timeupdate', () => { updateTime(); checkClipEnd(); });
-video.addEventListener('ended', checkClipEnd);
-video.addEventListener('error', () => { if (video.getAttribute('src')) { stop(); toast('Browser preview unavailable for this codec. Use an H.264 MP4 for preview; FFmpeg can still export this file.'); } });
+for (const player of [video, preloadVideo]) {
+  player.addEventListener('timeupdate', () => { if (player === video) { updateTime(); checkClipEnd(); } });
+  player.addEventListener('ended', () => { if (player === video) checkClipEnd(); });
+  player.addEventListener('error', () => { if (player === video && video.getAttribute('src')) { stop(); toast('Browser preview unavailable for this codec. Use an H.264 MP4 for preview; FFmpeg can still export this file.'); } });
+  player.addEventListener('play', () => { if (player !== video) return; cancelAnimationFrame(previewFrame); const generation = ++previewGeneration; const tick = () => { if (generation !== previewGeneration || !playing || video.paused) return; updateTime(); checkClipEnd(); previewFrame = requestAnimationFrame(tick); }; tick(); });
+}
 $('play').onclick = () => {
   if (!current()) return;
   if (playing) { stop(); return; }
@@ -466,21 +518,25 @@ function renderJoinBuilder() {
     const add = document.createElement('span'); add.textContent = '+ Add'; button.append(image, label, add); button.onclick = () => { if (joinDraft.length >= 100) return toast('The timeline holds up to 100 clips.'); joinDraft.push(freshClip(media)); renderJoinBuilder(); }; sources.append(button);
   }
   if (!library.length) { const empty = document.createElement('p'); empty.className = 'join-empty'; empty.textContent = 'Import videos to build a sequence.'; sources.append(empty); }
-  const duration = joinDraft.reduce((sum, clip) => sum + length(clip), 0);
+  const duration = joinDraft.reduce((sum, clip, index) => sum + length(clip) - transitionFor(joinDraft, index, $('join-transition').value), 0);
   $('add-selected').disabled = joinDraft.length > 100;
   $('add-selected').textContent = joinDraft.length ? `Apply ${joinDraft.length}-clip sequence` : 'Clear timeline';
-  $('join-selection').textContent = `${joinDraft.length} clip${joinDraft.length === 1 ? '' : 's'} · ${time(duration)} total · Clean cuts with no gaps. Music keeps its current timeline position.`;
+  $('join-selection').textContent = `${joinDraft.length} clip${joinDraft.length === 1 ? '' : 's'} · ${time(duration)} total · ${Number($('join-transition').value) ? 'Cross dissolve with blended source audio' : 'Hard cuts'}.`;
 }
 function openJoin() {
-  stop(); joinDraft = project.clips.map(clip => structuredClone(clip)); renderJoinBuilder(); $('join-dialog').showModal();
+  stop(); joinDraft = project.clips.map(clip => structuredClone(clip)); $('join-transition').value = String(project.settings.transitionDuration ?? 0.35); renderJoinBuilder(); $('join-dialog').showModal();
 }
+const transitionControl = document.createElement('label'); transitionControl.id = 'join-transition-control'; transitionControl.textContent = 'Transition between clips';
+const transitionSelect = document.createElement('select'); transitionSelect.id = 'join-transition';
+for (const [value, label] of [['0.35', 'Cross dissolve · 0.35s'], ['0.6', 'Cross dissolve · 0.6s'], ['1', 'Cross dissolve · 1s'], ['0', 'Hard cut · no blend']]) { const option = new Option(label, value); transitionSelect.add(option); }
+transitionSelect.onchange = renderJoinBuilder; transitionControl.append(transitionSelect); $('join-dialog').insertBefore(transitionControl, $('join-list').previousElementSibling);
 $('timeline-join').onclick = openJoin;
 for (const id of ['close-join', 'cancel-join']) $(id).onclick = () => $('join-dialog').close();
 $('join-import').onclick = () => { $('join-dialog').close(); $('file-input').click(); };
 $('join-select-all').onclick = () => { const used = new Set(joinDraft.map(clip => clip.mediaId)); for (const media of library) if (!used.has(media.id) && joinDraft.length < 100) joinDraft.push(freshClip(media)); renderJoinBuilder(); };
 $('join-clear').onclick = () => { joinDraft = []; renderJoinBuilder(); };
 $('add-selected').onclick = () => {
-  remember(); project.clips = joinDraft.map(clip => structuredClone(clip)); delete project.emptyByChoice; $('join-dialog').close(); selectClip(project.clips.length ? 0 : -1); renderTimeline(); save();
+  remember(); project.clips = joinDraft.map(clip => structuredClone(clip)); project.settings.transitionDuration = Number(transitionSelect.value); delete project.emptyByChoice; $('join-dialog').close(); selectClip(project.clips.length ? 0 : -1); renderTimeline(); save();
   toast(project.clips.length ? `${project.clips.length} clips joined in this exact order. Play all to review every cut.` : 'Timeline cleared. Undo restores the previous sequence.');
 };
 
@@ -516,7 +572,7 @@ $('zoom-in').onclick = () => setTimelineZoom(pixelsPerSecond * 1.25);
 $('zoom-out').onclick = () => setTimelineZoom(pixelsPerSecond / 1.25);
 $('timeline-fit').onclick = () => { setTimelineZoom(($('timeline-scroll').clientWidth - 40) / Math.max(total(), 5)); $('timeline-scroll').scrollLeft = 0; };
 function timelineX(clientX) { const viewport = $('timeline-scroll'); return clientX - viewport.getBoundingClientRect().left + viewport.scrollLeft; }
-function insertionIndex(x) { let position = 0; for (let i = 0; i < project.clips.length; i++) { const width = length(project.clips[i]) * pixelsPerSecond; if (x < position + width / 2) return i; position += width; } return project.clips.length; }
+function insertionIndex(x) { for (let i = 0; i < project.clips.length; i++) { const midpoint = (offset(i) + length(project.clips[i]) / 2) * pixelsPerSecond; if (x < midpoint) return i; } return project.clips.length; }
 function showInsertion(index) { $('drop-indicator').hidden = false; $('drop-indicator').style.left = `${offset(index) * pixelsPerSecond}px`; }
 function autoScrollTimeline(clientX) {
   const viewport = $('timeline-scroll'), rect = viewport.getBoundingClientRect();
@@ -590,10 +646,6 @@ $('timeline-scroll').addEventListener('drop', event => {
   const target = insertionIndex(timelineX(event.clientX)); const previousLength = project.clips.length;
   if (!addClip(media)) return;
   const [added] = project.clips.splice(previousLength, 1); project.clips.splice(target, 0, added); selectClip(target); renderTimeline(); save();
-});
-video.addEventListener('play', () => {
-  cancelAnimationFrame(previewFrame);
-  const tick = () => { if (!playing || video.paused) return; updateTime(); checkClipEnd(); previewFrame = requestAnimationFrame(tick); }; tick();
 });
 new ResizeObserver(() => { applyPreview(); if (!timelineGesture) renderTimeline(); }).observe($('preview-stage'));
 setupMusic();

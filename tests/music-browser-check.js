@@ -65,7 +65,7 @@ async function main() {
     await page.locator('#play').click();
     await page.waitForFunction(() => {
       const video = document.getElementById('video'), audios = [...document.querySelectorAll('#music-players audio')];
-      return video.videoHeight === 640 && video.currentTime > 0.2 && !audios[1].paused && Math.abs(audios[1].currentTime - (1.25 + video.currentTime)) < 0.2;
+      return video.videoHeight === 640 && video.currentTime > 0.2 && !audios[1].paused && Math.abs(audios[1].currentTime - (0.9 + video.currentTime)) < 0.2;
     });
     await page.locator('#play').click();
     await page.locator('.music-clip').nth(1).click();

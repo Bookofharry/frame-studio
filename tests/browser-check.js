@@ -7,6 +7,7 @@ const { spawn } = require('node:child_process');
 async function main() {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'frame-browser-'));
   const server = spawn(process.execPath, ['server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: '4318', FRAME_DATA_DIR: temporary }, windowsHide: true });
+  const serverErrors = []; server.stderr.on('data', chunk => serverErrors.push(String(chunk)));
   let browser;
   try {
     await new Promise((resolve, reject) => { server.stdout.once('data', resolve); server.once('error', reject); });
@@ -18,6 +19,10 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll('.media-card').length === 2);
     await page.waitForFunction(() => document.getElementById('video').readyState >= 2);
     assert.equal(await page.locator('.timeline-clip').count(), 2, 'Batch import adds every video');
+    await page.evaluate(() => { const seek = document.getElementById('scrubber'); seek.value = '2.82'; seek.dispatchEvent(new Event('input', { bubbles: true })); });
+    await page.waitForFunction(() => { const opacity = Number(document.getElementById('next-viewport').style.opacity); return opacity > 0.1 && opacity < 0.9; });
+    await page.waitForFunction(() => document.getElementById('video-preload').currentTime > 0.1 && document.getElementById('video-preload').readyState >= 2);
+    await page.locator('#play-all').click(); await page.waitForFunction(() => Number(document.getElementById('scrubber').value) > 0.2); await page.locator('#play').click();
     const timelineBounds = await page.locator('.timeline').boundingBox();
     assert.ok(timelineBounds.width > 1400, 'Timeline spans the desktop workspace');
     assert.equal(await page.evaluate(() => document.documentElement.scrollHeight > innerHeight), false, 'Desktop workspace fits the viewport');
@@ -64,6 +69,10 @@ async function main() {
     await page.locator('#timeline-join').click();
     await page.getByRole('button', { name: 'Add sample-silent.mp4 to joined sequence', exact: true }).click();
     await page.getByRole('button', { name: 'Add sample-with-audio.mp4 to joined sequence', exact: true }).click();
+    await page.locator('#join-transition').selectOption('0');
+    assert.ok((await page.locator('#join-selection').textContent()).includes('00:05.0'), 'Hard cuts keep the full sequence duration');
+    await page.locator('#join-transition').selectOption('0.6');
+    assert.ok((await page.locator('#join-selection').textContent()).includes('00:04.4'), 'Join builder includes the dissolve overlap in total duration');
     await page.getByRole('button', { name: 'Move clip 2 earlier', exact: true }).click();
     assert.ok((await page.locator('.join-item').first().getAttribute('aria-label')).includes('sample-with-audio.mp4'), 'Join builder reorders before applying');
     await page.locator('#add-selected').click();
@@ -75,6 +84,7 @@ async function main() {
     assert.ok((await page.locator('.timeline-clip').first().getAttribute('aria-label')).includes('sample-with-audio.mp4'), 'Visible reorder controls can restore join order');
     await page.locator('#timeline-join').click();
     assert.equal(await page.locator('.join-item').count(), 2, 'Join builder starts from the current timeline without duplicating clips');
+    assert.equal(await page.locator('#join-transition').inputValue(), '0.6', 'Transition duration stays with the project');
     await page.screenshot({ path: 'test-results/join-builder.png', fullPage: true });
     await page.getByRole('button', { name: 'Remove clip 2 from joined sequence', exact: true }).click();
     assert.equal(await page.locator('.join-item').count(), 1, 'Join builder can remove a clip before applying');
@@ -167,7 +177,9 @@ async function main() {
     await page.locator('.timeline-clip').first().click();
     await page.locator('#play-all').click();
     await page.waitForFunction(() => document.getElementById('play').getAttribute('aria-label') === 'Play timeline', { timeout: 15000 });
-    assert.ok(Number(await page.locator('#scrubber').inputValue()) > 3.5, 'Playback traverses all three clips');
+    assert.ok(Number(await page.locator('#scrubber').inputValue()) > 2.5, 'Playback traverses all three dissolved clips');
+    assert.equal(await page.locator('.timeline-clip').last().getAttribute('aria-pressed'), 'true', 'Playback reaches the final clip');
+    assert.equal(await page.locator('#selection-badge').textContent(), 'Clip 3', 'Inspector follows playback across a dissolve');
     await page.locator('.timeline-clip').first().click();
     await page.screenshot({ path: 'test-results/editor-desktop.png', fullPage: true });
     await page.reload(); await page.waitForFunction(() => document.querySelectorAll('.timeline-clip').length === 3);
@@ -178,7 +190,8 @@ async function main() {
     await page.locator('#open-export').click();
     assert.ok((await page.locator('#export-description').textContent()).includes('3 clips'));
     await page.locator('#resolution').selectOption('720'); await page.locator('#start-export').click();
-    await page.locator('#download-export').waitFor({ state: 'visible', timeout: 90000 });
+    await page.waitForFunction(() => !document.getElementById('download-export').hidden || /failed|error/i.test(document.getElementById('export-message').textContent), { timeout: 90000 });
+    assert.equal(await page.locator('#download-export').isVisible(), true, serverErrors.join('').slice(-6000));
     const downloaded = page.waitForEvent('download'); await page.locator('#download-export').click(); await (await downloaded).saveAs('test-results/browser-export.mp4');
     await page.locator('#close-export').click();
     await page.setViewportSize({ width: 390, height: 844 }); await page.screenshot({ path: 'test-results/editor-mobile.png', fullPage: true });

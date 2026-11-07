@@ -19,7 +19,7 @@ The left library stays synchronized with the timeline. Each clip row shows its e
 
 ## Joining two or more videos
 
-Videos join automatically in timeline order. Click **Arrange & join** to review the complete sequence before applying it: drag numbered rows or use the arrows to reorder, remove unwanted clips, and add another copy from Project media. The builder starts from the current timeline, so opening it never duplicates clips by itself. Trims, crop, speed, color and source-audio settings stay attached to each reordered clip. **Apply sequence** changes the timeline as one undoable action. **Play all** previews every clean cut from the beginning; the next source is preloaded to reduce pauses between different files. **Export** saves the sequence as one MP4.
+Videos join automatically in timeline order. Click **Arrange & join** to review the sequence: drag numbered rows or use the arrows to reorder, remove clips, and add another copy from Project media. Set a cross dissolve of 0.35, 0.6, or 1 second, or choose a hard cut. The picture and source audio blend during a dissolve, and the overlap shortens the timeline by the shown amount. Very short clips use a shorter dissolve automatically; an exact split of continuous footage remains seamless. Opening the builder never duplicates clips by itself; trims, crop, speed, color and audio settings stay with each clip. Applying the sequence is one undoable action. **Play all** previews the sequence; **Export** saves it as one MP4. Imported music keeps its timeline placement when transitions change.
 
 ## Discover music without uploading
 
