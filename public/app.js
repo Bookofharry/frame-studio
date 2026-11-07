@@ -23,6 +23,7 @@ const length = clip => (clip.end - clip.start) / clip.speed;
 const transitionFor = (clips, index, duration) => {
   if (index < 0 || index >= clips.length - 1 || !Number(duration)) return 0;
   const a = clips[index], b = clips[index + 1];
+  if (a.cutAfter) return 0;
   if (a.mediaId === b.mediaId && Math.abs(a.end - b.start) < 0.001) return 0;
   const overlap = Math.min(Number(duration), length(a) / 3, length(b) / 3);
   return overlap >= 0.05 ? overlap : 0;
@@ -55,7 +56,7 @@ function renderLibrary() {
     const meta = document.createElement('small'); meta.textContent = `${media.width} × ${media.height} · ${Math.round(media.fps)} fps · Original ${time(media.duration)}`;
     details.append(name, meta);
     const edits = document.createElement('div'); edits.className = 'library-edits';
-    const add = document.createElement('button'); add.className = 'add-clip'; add.textContent = '+ Add original to timeline'; add.setAttribute('aria-label', `Add ${media.name} to timeline`); add.onclick = () => { addClip(media); toast('Video added at the end. Use Play all to preview the joined videos.'); };
+    const add = document.createElement('button'); add.className = 'add-clip'; add.textContent = '+ Add at playhead'; add.setAttribute('aria-label', `Add ${media.name} to timeline at playhead`); add.onclick = () => { const at = Number($('scrubber').value); if (addClip(media, at)) toast(`Video inserted at ${time(at)}.`); };
     info.append(details); card.append(thumbnail, info, edits, add); $('library').append(card);
   }
   syncLibraryState();
@@ -111,19 +112,48 @@ function syncLibraryState() {
     edit.onclick = () => { const index = active?.index ?? matches[0]?.index; if (index === undefined) addClip(media); else { selectClip(index); renderTimeline(); } $('preview-stage').scrollIntoView({ behavior: 'smooth', block: 'center' }); };
   }
 }
-function addClip(media) {
-  return addClips([media]);
+function addClip(media, at = Number($('scrubber').value)) {
+  return addClips([media], at);
 }
 function freshClip(media) { return { id: crypto.randomUUID(), mediaId: media.id, start: 0, end: media.duration, speed: 1, volume: 1, brightness: 0, contrast: 1, saturation: 1 }; }
-function addClips(items) {
-  const available = Math.max(0, 100 - project.clips.length);
+function insertionPlan(position, firstMedia) {
+  const clips = project.clips, at = Math.max(0, Math.min(total(), Number(position) || 0));
+  if (!clips.length) return { index: 0, at };
+  if (at >= total() - 0.02) return { index: clips.length, at };
+  for (let index = 1; index < clips.length; index++) if (Math.abs(at - offset(index)) <= 0.03) return { index, at };
+  for (let index = 0; index < clips.length; index++) {
+    const clip = clips[index], start = offset(index);
+    if (at <= start + 0.03) return { index, at };
+    if (at < start + length(clip) - 0.03) {
+      const fps = mediaFor(clip)?.fps || 30;
+      const sourceAt = Math.max(clip.start, Math.min(clip.end, Math.round((clip.start + (at - start) * clip.speed) * fps) / fps));
+      if (sourceAt - clip.start < 0.08) return { index, at };
+      if (clip.end - sourceAt < 0.08) return { index: index + 1, at };
+      const before = (sourceAt - clip.start) / clip.speed;
+      const remaining = (clip.end - sourceAt - 0.08) / clip.speed;
+      const requested = Number(project.settings.transitionDuration ?? 0.35);
+      const candidate = Math.min(requested, before / 2, remaining, firstMedia.duration / 3);
+      const fade = candidate >= 0.05 ? candidate : 0;
+      return { index: index + 1, at, split: { sourceAt: sourceAt + fade * clip.speed, fade } };
+    }
+  }
+  return { index: clips.length, at };
+}
+function addClips(items, position = Number($('scrubber').value)) {
+  if (!items.length) return 0;
+  const plan = insertionPlan(position, items[0]);
+  const available = Math.max(0, 100 - project.clips.length - (plan.split ? 1 : 0));
   const additions = items.slice(0, available);
-  if (!additions.length) { toast('The timeline holds up to 100 clips. Remove a clip before adding more.'); return 0; }
+  if (!additions.length) { toast(plan.split ? 'The timeline needs two free clip slots to insert inside a video.' : 'The timeline holds up to 100 clips. Remove a clip before adding more.'); return 0; }
   remember();
   delete project.emptyByChoice;
-  const firstAdded = project.clips.length;
-  project.clips.push(...additions.map(freshClip));
-  selectClip(firstAdded); renderTimeline(); save();
+  if (plan.split) {
+    const left = project.clips[plan.index - 1], right = { ...left, id: crypto.randomUUID(), start: plan.split.sourceAt };
+    left.end = plan.split.sourceAt; left.cutAfter = !plan.split.fade;
+    project.clips.splice(plan.index, 0, right);
+  } else if (plan.index > 0 && (plan.index === project.clips.length || !transitionLength(plan.index - 1))) project.clips[plan.index - 1].cutAfter = true;
+  project.clips.splice(plan.index, 0, ...additions.map(freshClip));
+  selectClip(plan.index); renderTimeline(); save();
   $('timeline-clips').querySelector('.selected')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   return additions.length;
 }
@@ -259,7 +289,7 @@ function updateTime() {
   syncMusic(position);
 }
 function seekTimeline(position) {
-  for (let index = 0; index < project.clips.length; index++) { const clip = project.clips[index], start = offset(index); if (position < start + length(clip) || index === project.clips.length - 1) { selectClip(index, clip.start + (position - start) * clip.speed, playing); renderTimeline(); return; } }
+  for (let index = 0; index < project.clips.length; index++) { const clip = project.clips[index], start = offset(index); if (position < start + length(clip) || index === project.clips.length - 1) { selectClip(index, clip.start + (position - start) * clip.speed, playing); renderTimeline(); $('scrubber').value = position; return; } }
 }
 function nextClip() {
   if (!playing) return;
@@ -292,7 +322,7 @@ $('scrubber').oninput = e => seekTimeline(Number(e.target.value));
 function stepFrame(direction, count = 1) { stop(); const fps = mediaFor(current())?.fps || 30; seekTimeline(Math.max(0, Math.min(total(), Number($('scrubber').value) + direction * count / fps))); }
 $('back').onclick = () => stepFrame(-1);
 $('forward').onclick = () => stepFrame(1);
-async function importFiles(files) {
+async function importFiles(files, position = Number($('scrubber').value)) {
   if (!files.length) return;
   if (importing) return toast('Wait for the current import to finish, then add more videos.');
   if (files.length > 20) { toast('Import up to 20 videos at a time.'); return; }
@@ -302,8 +332,8 @@ async function importFiles(files) {
   try {
     const result = await api('/api/import', { method: 'POST', body: form }); allMedia.push(...result.imported);
     project.mediaIds = [...new Set([...project.mediaIds, ...result.imported.map(media => media.id)])]; refreshProjectLibrary();
-    const count = result.imported.length ? addClips(result.imported) : 0;
-    const notice = count ? `${count} video${count === 1 ? '' : 's'} added to the timeline. Export saves all clips as one MP4.` : 'No videos added to the timeline.';
+    const count = result.imported.length ? addClips(result.imported, position) : 0;
+    const notice = count ? `${count} video${count === 1 ? '' : 's'} inserted at ${time(position)}. Export saves all clips as one MP4.` : 'No videos added to the timeline.';
     toast([notice, count < result.imported.length ? 'Timeline limit reached; remaining videos are in the library.' : '', ...result.errors].filter(Boolean).join(' '));
   }
   catch (error) { toast(error.message); } finally { importing = false; zone.disabled = false; label.textContent = 'Import media'; $('file-input').value = ''; }
@@ -483,15 +513,16 @@ $('crop-box').addEventListener('pointermove', event => {
 for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) $('crop-box').addEventListener(event, () => { cropDrag = null; });
 window.addEventListener('resize', resizeCropStage);
 
-let joinDraft = [], draggedJoinIndex = -1;
+let joinDraft = [], joinInsertIndex = 0, draggedJoinIndex = -1;
 function moveJoinClip(from, to) {
   if (from < 0 || to < 0 || from >= joinDraft.length || to >= joinDraft.length || from === to) return;
-  const [clip] = joinDraft.splice(from, 1); joinDraft.splice(to, 0, clip); renderJoinBuilder();
+  const [clip] = joinDraft.splice(from, 1); joinDraft.splice(to, 0, clip); joinInsertIndex = to + 1; renderJoinBuilder();
 }
 function renderJoinBuilder() {
   const list = $('join-list'); list.replaceChildren();
+  if (joinDraft.length) { const start = document.createElement('button'); start.type = 'button'; start.className = 'mini join-insert-start'; start.textContent = 'Insert next video at start'; start.setAttribute('aria-pressed', String(joinInsertIndex === 0)); start.onclick = () => { joinInsertIndex = 0; renderJoinBuilder(); }; list.append(start); }
   joinDraft.forEach((clip, index) => {
-    const media = mediaFor(clip); const row = document.createElement('div'); row.className = 'join-item'; row.draggable = true; row.dataset.joinIndex = index;
+    const media = mediaFor(clip); const row = document.createElement('div'); row.className = 'join-item'; row.draggable = true; row.dataset.joinIndex = index; row.classList.toggle('insert-after', joinInsertIndex === index + 1);
     row.setAttribute('aria-label', `Joined clip ${index + 1}: ${media?.name || 'Missing source'}`);
     row.ondragstart = event => { draggedJoinIndex = index; row.classList.add('dragging'); event.dataTransfer.effectAllowed = 'move'; };
     row.ondragend = () => { draggedJoinIndex = -1; row.classList.remove('dragging'); };
@@ -506,8 +537,9 @@ function renderJoinBuilder() {
     const actions = document.createElement('span'); actions.className = 'join-row-actions';
     const earlier = document.createElement('button'); earlier.type = 'button'; earlier.className = 'mini'; earlier.textContent = '↑'; earlier.title = 'Move earlier'; earlier.setAttribute('aria-label', `Move clip ${index + 1} earlier`); earlier.disabled = index === 0; earlier.onclick = () => moveJoinClip(index, index - 1);
     const later = document.createElement('button'); later.type = 'button'; later.className = 'mini'; later.textContent = '↓'; later.title = 'Move later'; later.setAttribute('aria-label', `Move clip ${index + 1} later`); later.disabled = index === joinDraft.length - 1; later.onclick = () => moveJoinClip(index, index + 1);
-    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'mini join-remove'; remove.textContent = 'Remove'; remove.setAttribute('aria-label', `Remove clip ${index + 1} from joined sequence`); remove.onclick = () => { joinDraft.splice(index, 1); renderJoinBuilder(); };
-    actions.append(earlier, later, remove); row.append(order, image, details, actions); list.append(row);
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'mini join-remove'; remove.textContent = 'Remove'; remove.setAttribute('aria-label', `Remove clip ${index + 1} from joined sequence`); remove.onclick = () => { joinDraft.splice(index, 1); joinInsertIndex = Math.min(joinInsertIndex, joinDraft.length); renderJoinBuilder(); };
+    const insert = document.createElement('button'); insert.type = 'button'; insert.className = 'mini join-insert'; insert.textContent = 'Insert after'; insert.setAttribute('aria-label', `Insert next video after clip ${index + 1}`); insert.setAttribute('aria-pressed', String(joinInsertIndex === index + 1)); insert.onclick = () => { joinInsertIndex = index + 1; renderJoinBuilder(); };
+    actions.append(earlier, later, insert, remove); row.append(order, image, details, actions); list.append(row);
   });
   if (!joinDraft.length) { const empty = document.createElement('p'); empty.className = 'join-empty'; empty.textContent = 'Your sequence is empty. Add videos from Project media below.'; list.append(empty); }
   const sources = $('join-sources'); sources.replaceChildren();
@@ -515,16 +547,16 @@ function renderJoinBuilder() {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'join-source'; button.setAttribute('aria-label', `Add ${media.name} to joined sequence`);
     const image = document.createElement('img'); image.src = media.thumbnail; image.alt = '';
     const label = document.createElement('span'); const name = document.createElement('strong'); name.textContent = media.name; const meta = document.createElement('small'); meta.textContent = `${time(media.duration)} · ${joinDraft.filter(c => c.mediaId === media.id).length} in sequence`; label.append(name, meta);
-    const add = document.createElement('span'); add.textContent = '+ Add'; button.append(image, label, add); button.onclick = () => { if (joinDraft.length >= 100) return toast('The timeline holds up to 100 clips.'); joinDraft.push(freshClip(media)); renderJoinBuilder(); }; sources.append(button);
+    const add = document.createElement('span'); add.textContent = '+ Add'; button.append(image, label, add); button.onclick = () => { if (joinDraft.length >= 100) return toast('The timeline holds up to 100 clips.'); joinDraft.splice(joinInsertIndex, 0, freshClip(media)); joinInsertIndex++; renderJoinBuilder(); }; sources.append(button);
   }
   if (!library.length) { const empty = document.createElement('p'); empty.className = 'join-empty'; empty.textContent = 'Import videos to build a sequence.'; sources.append(empty); }
   const duration = joinDraft.reduce((sum, clip, index) => sum + length(clip) - transitionFor(joinDraft, index, $('join-transition').value), 0);
   $('add-selected').disabled = joinDraft.length > 100;
   $('add-selected').textContent = joinDraft.length ? `Apply ${joinDraft.length}-clip sequence` : 'Clear timeline';
-  $('join-selection').textContent = `${joinDraft.length} clip${joinDraft.length === 1 ? '' : 's'} · ${time(duration)} total · ${Number($('join-transition').value) ? 'Cross dissolve with blended source audio' : 'Hard cuts'}.`;
+  $('join-selection').textContent = `${joinDraft.length} clip${joinDraft.length === 1 ? '' : 's'} · ${time(duration)} total · Next video inserts ${joinInsertIndex ? `after clip ${joinInsertIndex}` : 'at the start'} · ${Number($('join-transition').value) ? 'Cross dissolve with blended source audio' : 'Hard cuts'}.`;
 }
 function openJoin() {
-  stop(); joinDraft = project.clips.map(clip => structuredClone(clip)); $('join-transition').value = String(project.settings.transitionDuration ?? 0.35); renderJoinBuilder(); $('join-dialog').showModal();
+  stop(); joinDraft = project.clips.map(clip => structuredClone(clip)); joinInsertIndex = selected >= 0 ? selected + 1 : joinDraft.length; $('join-transition').value = String(project.settings.transitionDuration ?? 0.35); renderJoinBuilder(); $('join-dialog').showModal();
 }
 const transitionControl = document.createElement('label'); transitionControl.id = 'join-transition-control'; transitionControl.textContent = 'Transition between clips';
 const transitionSelect = document.createElement('select'); transitionSelect.id = 'join-transition';
@@ -533,8 +565,8 @@ transitionSelect.onchange = renderJoinBuilder; transitionControl.append(transiti
 $('timeline-join').onclick = openJoin;
 for (const id of ['close-join', 'cancel-join']) $(id).onclick = () => $('join-dialog').close();
 $('join-import').onclick = () => { $('join-dialog').close(); $('file-input').click(); };
-$('join-select-all').onclick = () => { const used = new Set(joinDraft.map(clip => clip.mediaId)); for (const media of library) if (!used.has(media.id) && joinDraft.length < 100) joinDraft.push(freshClip(media)); renderJoinBuilder(); };
-$('join-clear').onclick = () => { joinDraft = []; renderJoinBuilder(); };
+$('join-select-all').onclick = () => { const used = new Set(joinDraft.map(clip => clip.mediaId)); for (const media of library) if (!used.has(media.id) && joinDraft.length < 100) { joinDraft.splice(joinInsertIndex, 0, freshClip(media)); joinInsertIndex++; } renderJoinBuilder(); };
+$('join-clear').onclick = () => { joinDraft = []; joinInsertIndex = 0; renderJoinBuilder(); };
 $('add-selected').onclick = () => {
   remember(); project.clips = joinDraft.map(clip => structuredClone(clip)); project.settings.transitionDuration = Number(transitionSelect.value); delete project.emptyByChoice; $('join-dialog').close(); selectClip(project.clips.length ? 0 : -1); renderTimeline(); save();
   toast(project.clips.length ? `${project.clips.length} clips joined in this exact order. Play all to review every cut.` : 'Timeline cleared. Undo restores the previous sequence.');
@@ -574,6 +606,7 @@ $('timeline-fit').onclick = () => { setTimelineZoom(($('timeline-scroll').client
 function timelineX(clientX) { const viewport = $('timeline-scroll'); return clientX - viewport.getBoundingClientRect().left + viewport.scrollLeft; }
 function insertionIndex(x) { for (let i = 0; i < project.clips.length; i++) { const midpoint = (offset(i) + length(project.clips[i]) / 2) * pixelsPerSecond; if (x < midpoint) return i; } return project.clips.length; }
 function showInsertion(index) { $('drop-indicator').hidden = false; $('drop-indicator').style.left = `${offset(index) * pixelsPerSecond}px`; }
+function showInsertionAt(position) { $('drop-indicator').hidden = false; $('drop-indicator').style.left = `${position * pixelsPerSecond}px`; }
 function autoScrollTimeline(clientX) {
   const viewport = $('timeline-scroll'), rect = viewport.getBoundingClientRect();
   if (clientX < rect.left + 28) viewport.scrollLeft -= 18;
@@ -636,16 +669,15 @@ window.addEventListener('pointerup', event => finishTimelineGesture(event));
 window.addEventListener('pointercancel', event => finishTimelineGesture(event, true));
 $('timeline-scroll').addEventListener('dragover', event => {
   if (![...event.dataTransfer.types].some(type => ['application/x-frame-media', 'Files'].includes(type))) return;
-  event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; $('timeline-scroll').classList.add('dragover'); autoScrollTimeline(event.clientX); showInsertion(insertionIndex(timelineX(event.clientX)));
+  event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; $('timeline-scroll').classList.add('dragover'); autoScrollTimeline(event.clientX); showInsertionAt(Math.max(0, Math.min(total(), timelineX(event.clientX) / pixelsPerSecond)));
 });
 $('timeline-scroll').addEventListener('dragleave', event => { if (!$('timeline-scroll').contains(event.relatedTarget)) { $('timeline-scroll').classList.remove('dragover'); $('drop-indicator').hidden = true; } });
 $('timeline-scroll').addEventListener('drop', event => {
   event.preventDefault(); $('timeline-scroll').classList.remove('dragover'); $('drop-indicator').hidden = true;
-  if (event.dataTransfer.files.length) { importFiles([...event.dataTransfer.files]); return; }
+  const at = Math.max(0, Math.min(total(), timelineX(event.clientX) / pixelsPerSecond));
+  if (event.dataTransfer.files.length) { importFiles([...event.dataTransfer.files], at); return; }
   const media = library.find(m => m.id === event.dataTransfer.getData('application/x-frame-media')); if (!media) return;
-  const target = insertionIndex(timelineX(event.clientX)); const previousLength = project.clips.length;
-  if (!addClip(media)) return;
-  const [added] = project.clips.splice(previousLength, 1); project.clips.splice(target, 0, added); selectClip(target); renderTimeline(); save();
+  addClip(media, at);
 });
 new ResizeObserver(() => { applyPreview(); if (!timelineGesture) renderTimeline(); }).observe($('preview-stage'));
 setupMusic();

@@ -173,7 +173,7 @@ function validateProject(body) {
     if (end - start < 0.08) throw new Error('Each clip must be at least 0.08 seconds long.');
     const crop = c.crop === undefined || c.crop === null ? cropGeometry.full(media) : c.crop;
     if (!cropGeometry.valid(crop, media)) throw new Error('The crop must stay within the source video and be at least 2 × 2 pixels.');
-    return { media, crop, start, end, speed: number(c.speed, 1, 0.5, 7), volume: number(c.volume, 1, 0, 1), brightness: number(c.brightness, 0, -0.5, 0.5), contrast: number(c.contrast, 1, 0.5, 2), saturation: number(c.saturation, 1, 0, 2) };
+    return { media, crop, start, end, speed: number(c.speed, 1, 0.5, 7), volume: number(c.volume, 1, 0, 1), brightness: number(c.brightness, 0, -0.5, 0.5), contrast: number(c.contrast, 1, 0.5, 2), saturation: number(c.saturation, 1, 0, 2), cutAfter: c.cutAfter === true };
   });
   const settings = body.settings || {};
   const resolution = ['source', '720', '1080', '2160'].includes(settings.resolution) ? settings.resolution : 'source';
@@ -195,6 +195,7 @@ function validateProject(body) {
 }
 function overlap(clips, index, duration) {
   if (!duration || index < 0 || index >= clips.length - 1) return 0;
+  if (clips[index].cutAfter) return 0;
   if (clips[index].media.id === clips[index + 1].media.id && Math.abs(clips[index].end - clips[index + 1].start) < 0.001) return 0;
   const a = (clips[index].end - clips[index].start) / clips[index].speed;
   const b = (clips[index + 1].end - clips[index + 1].start) / clips[index + 1].speed;
