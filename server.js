@@ -173,7 +173,7 @@ function validateProject(body) {
     if (end - start < 0.08) throw new Error('Each clip must be at least 0.08 seconds long.');
     const crop = c.crop === undefined || c.crop === null ? cropGeometry.full(media) : c.crop;
     if (!cropGeometry.valid(crop, media)) throw new Error('The crop must stay within the source video and be at least 2 × 2 pixels.');
-    return { media, crop, start, end, speed: number(c.speed, 1, 0.5, 7), volume: number(c.volume, 1, 0, 1), brightness: number(c.brightness, 0, -0.5, 0.5), contrast: number(c.contrast, 1, 0.5, 2), saturation: number(c.saturation, 1, 0, 2), cutAfter: c.cutAfter === true };
+    return { media, crop, start, end, speed: number(c.speed, 1, 0.5, 7), volume: number(c.volume, 1, 0, 1), brightness: number(c.brightness, 0, -0.5, 0.5), contrast: number(c.contrast, 1, 0.5, 2), saturation: number(c.saturation, 1, 0, 2), cutAfter: c.cutAfter === true, transitionAfter: c.transitionAfter === undefined ? undefined : number(c.transitionAfter, 0.35, 0, 1.5) };
   });
   const settings = body.settings || {};
   const resolution = ['source', '720', '1080', '2160'].includes(settings.resolution) ? settings.resolution : 'source';
@@ -194,12 +194,14 @@ function validateProject(body) {
   return { clips, music, settings: { resolution, aspect, quality, fps, text, transitionDuration } };
 }
 function overlap(clips, index, duration) {
-  if (!duration || index < 0 || index >= clips.length - 1) return 0;
+  if (index < 0 || index >= clips.length - 1) return 0;
   if (clips[index].cutAfter) return 0;
+  const chosen = Number(clips[index].transitionAfter ?? duration);
+  if (!chosen) return 0;
   if (clips[index].media.id === clips[index + 1].media.id && Math.abs(clips[index].end - clips[index + 1].start) < 0.001) return 0;
   const a = (clips[index].end - clips[index].start) / clips[index].speed;
   const b = (clips[index + 1].end - clips[index + 1].start) / clips[index + 1].speed;
-  const value = Math.min(duration, a / 3, b / 3);
+  const value = Math.min(chosen, a / 3, b / 3);
   return value >= 0.05 ? value : 0;
 }
 function dimensions(media, settings) {
@@ -260,7 +262,7 @@ async function render(job, project) {
     const output = path.join(root, 'exports', `${job.id}.mp4`);
     const audible = music.filter(c => c.at < total && c.volume > 0);
     const joined = audible.length ? 'joined.mp4' : output;
-    if (clips.length > 1 && settings.transitionDuration > 0) {
+    if (clips.length > 1 && clips.some((_, index) => overlap(clips, index, settings.transitionDuration) > 0)) {
       const args = clips.flatMap((_, index) => ['-i', `${index}.mp4`]);
       const filters = clips.map((_, index) => `[${index}:v]settb=AVTB,setpts=PTS-STARTPTS[base${index}]`);
       let elapsed = (clips[0].end - clips[0].start) / clips[0].speed;

@@ -8,6 +8,7 @@
     "dev": "node server.js",
     "test": "node --test tests/editor.test.js tests/catalog.test.js",
     "test:browser": "node tests/browser-check.js",
+    "test:transition": "node tests/transition-browser-check.js",
     "test:music": "node tests/music-browser-check.js",
     "test:catalog": "node tests/catalog-browser-check.js",
     "catalog:rebuild": "node scripts/build-audio-catalog.js"

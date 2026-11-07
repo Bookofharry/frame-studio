@@ -19,7 +19,7 @@ The left library stays synchronized with the timeline. Each clip row shows its e
 
 ## Joining two or more videos
 
-Videos join automatically in timeline order. Click **Arrange & join** to review the sequence: drag numbered rows or use the arrows to reorder, remove clips, and choose **Insert after** on a row before adding a video from Project media. Set a cross dissolve of 0.35, 0.6, or 1 second, or choose a hard cut. The picture and source audio blend during a dissolve, and the overlap shortens the timeline by the shown amount. Very short clips use a shorter dissolve automatically; an exact split of continuous footage remains seamless. Opening the builder never duplicates clips by itself; trims, crop, speed, color and audio settings stay with each clip. Applying the sequence is one undoable action. **Play all** previews the sequence; **Export** saves it as one MP4. Imported music keeps its timeline placement when transitions change.
+Videos join automatically in timeline order. Click **Arrange & join** to review the sequence: drag numbered rows or use the arrows to reorder, remove clips, and choose **Insert after** on a row before adding a video from Project media. Set a project cross dissolve of 0.35, 0.6, or 1 second, or choose a hard cut. To improve one specific join, select the clip before it and choose **Video → Transition to next clip → Smooth dissolve** or **Gentle dissolve**; that choice previews and exports without changing the other joins. The picture and source audio blend during a dissolve, and the overlap shortens the timeline by the shown amount. Very short clips use a shorter dissolve automatically; an exact split of continuous footage remains seamless. Opening the builder never duplicates clips by itself; trims, crop, speed, color and audio settings stay with each clip. Applying the sequence is one undoable action. **Play all** previews the sequence; **Export** saves it as one MP4. Imported music keeps its timeline placement when transitions change.
 
 ## Discover music without uploading
 
@@ -54,7 +54,7 @@ Music edits and source references are included in automatic saving and **Save pr
 - Browser color/text preview is approximate. Export uses FFmpeg's color and text filters. Audio speed changes preserve pitch.
 - Browser playback depends on supported codecs. H.264 MP4 works best. FFmpeg can import/export additional formats whose browser preview may be unavailable.
 - Maximum import: 20 files at a time, 8 GB per file. One export runs at a time. Large/4K exports require free disk space and may take time.
-- This version supports sequential clips, original audio, a global title, cuts, trim, crop, speed, and basic color. It also supports imported music and sound effects with independent placement, trim, and volume. It does not yet include transitions, animated titles, or automatic captions.
+- This version supports sequential clips, cross dissolves, original audio, a global title, cuts, trim, crop, speed, and basic color. It also supports imported music and sound effects with independent placement, trim, and volume. It does not yet include animated titles or automatic captions.
 
 ## Files and privacy
 
@@ -67,6 +67,8 @@ Videos and audio are copied into `data/media`; exports are stored in `data/expor
 Crop tests also decode the exported pixels to verify that discarded content is removed, and reject crops outside the source frame. Run `npm run test:browser` after `npm test` to check editing activation, crop dragging/resizing, presets, cancel, undo, save/reopen, playback, download, and mobile layout in Microsoft Edge. Browser tests use an isolated library.
 
 Join tests export three different colored videos and check frames from the beginning, middle, and end to verify all three appear in the selected order. Browser checks cover batch import, later imports, multi-selection order, reordering, cancellation, batch undo, Play all, and export. The studio checks exercise real pointer dragging on both trim handles, dragging clips to reorder, media insertion, ruler/playhead seeking, zoom, search, keyboard split/duplicate, undo/redo, inspector tabs, and desktop/mobile layout.
+
+Run `npm run test:transition` to verify a late cut near 1:49 only blends decoded, playing frames, completes the clip handoff, and accepts a longer dissolve on one cut.
 
 The workspace redesign was informed by CapCut's official [editing guide](https://www.capcut.com/resource/free-video-edit) and [desktop workflow](https://www.capcut.com/resource/how-to-use-capcut). It uses a media/player/inspector layout with direct timeline editing; the supported feature list above defines Frame's current scope.
 

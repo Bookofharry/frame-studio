@@ -91,6 +91,12 @@ test('joins three different videos into one MP4 in the selected order', { timeou
   assert.equal(hardCutJob.status, 'complete', JSON.stringify(hardCutJob));
   const hardCutPath = path.join(fixtures, 'verified-hard-cut.mp4'); fs.writeFileSync(hardCutPath, Buffer.from(await (await fetch(`${base}/api/exports/${hardCutId}/download`)).arrayBuffer()));
   assert.ok(Math.abs(Number((await probe(hardCutPath)).format.duration) - 3) < 0.12, 'Choosing hard cuts preserves the full source duration');
+  const oneDissolve = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips: [{ ...clips[0], transitionAfter: 0.6 }, ...clips.slice(1)], settings: { resolution: 'source', aspect: 'source', transitionDuration: 0 } }) });
+  assert.equal(oneDissolve.status, 200); const oneDissolveId = (await oneDissolve.json()).id; let oneDissolveJob;
+  for (let i = 0; i < 120; i++) { oneDissolveJob = await (await fetch(`${base}/api/exports/${oneDissolveId}`)).json(); if (oneDissolveJob.status !== 'rendering') break; await new Promise(resolve => setTimeout(resolve, 250)); }
+  assert.equal(oneDissolveJob.status, 'complete', JSON.stringify(oneDissolveJob));
+  const oneDissolvePath = path.join(fixtures, 'verified-one-dissolve.mp4'); fs.writeFileSync(oneDissolvePath, Buffer.from(await (await fetch(`${base}/api/exports/${oneDissolveId}/download`)).arrayBuffer()));
+  assert.ok(Math.abs(Number((await probe(oneDissolvePath)).format.duration) - (3 - 1 / 3)) < 0.12, 'One cut can dissolve while the project default is hard cuts');
 });
 test('7x export turns seven seconds into one second with audible audio', { timeout: 90000 }, async () => {
   const source = path.join(fixtures, 'speed-seven.mp4');

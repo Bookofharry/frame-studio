@@ -25,11 +25,13 @@ function refreshProjectLibrary() {
 const current = () => project.clips[selected];
 const length = clip => (clip.end - clip.start) / clip.speed;
 const transitionFor = (clips, index, duration) => {
-  if (index < 0 || index >= clips.length - 1 || !Number(duration)) return 0;
+  if (index < 0 || index >= clips.length - 1) return 0;
   const a = clips[index], b = clips[index + 1];
   if (a.cutAfter) return 0;
+  const chosen = Number(a.transitionAfter ?? duration);
+  if (!chosen) return 0;
   if (a.mediaId === b.mediaId && Math.abs(a.end - b.start) < 0.001) return 0;
-  const overlap = Math.min(Number(duration), length(a) / 3, length(b) / 3);
+  const overlap = Math.min(chosen, length(a) / 3, length(b) / 3);
   return overlap >= 0.05 ? overlap : 0;
 };
 const transitionLength = (index, clips = project.clips) => transitionFor(clips, index, project.settings.transitionDuration ?? 0.35);
@@ -163,7 +165,7 @@ function addClips(items, position = Number($('scrubber').value)) {
   delete project.emptyByChoice;
   if (plan.split) {
     const left = project.clips[plan.index - 1], right = { ...left, id: crypto.randomUUID(), start: plan.split.sourceAt };
-    left.end = plan.split.sourceAt; left.cutAfter = !plan.split.fade;
+    left.end = plan.split.sourceAt; left.cutAfter = !plan.split.fade; if (plan.split.fade) left.transitionAfter = plan.split.fade; else delete left.transitionAfter;
     project.clips.splice(plan.index, 0, right);
   } else if (plan.index > 0 && (plan.index === project.clips.length || !transitionLength(plan.index - 1))) project.clips[plan.index - 1].cutAfter = true;
   project.clips.splice(plan.index, 0, ...additions.map(freshClip));
@@ -254,6 +256,12 @@ function renderControls() {
   for (const key of ['brightness', 'contrast', 'saturation', 'volume', 'speed']) $(key).value = clip[key];
   for (const key of ['brightness', 'contrast', 'saturation', 'volume']) $(`${key}-value`).textContent = key === 'brightness' ? `${Math.round(clip[key] * 100) > 0 ? '+' : ''}${Math.round(clip[key] * 100)}` : `${Math.round(clip[key] * 100)}%`;
   $('move-left').disabled = selected <= 0; $('move-right').disabled = selected === project.clips.length - 1;
+  const transitionSelect = $('transition-after');
+  transitionSelect.disabled = selected >= project.clips.length - 1;
+  transitionSelect.querySelector('option[data-custom]')?.remove();
+  const transitionValue = clip.cutAfter ? '0' : clip.transitionAfter == null ? 'default' : String(clip.transitionAfter);
+  if (![...transitionSelect.options].some(option => option.value === transitionValue)) { const custom = new Option(`Custom dissolve · ${Number(transitionValue).toFixed(2)}s`, transitionValue); custom.dataset.custom = 'true'; transitionSelect.add(custom); }
+  transitionSelect.value = transitionValue;
   const crop = cropFor(clip);
   $('crop-summary').textContent = `${crop.width} × ${crop.height} px · ${clip.crop ? 'Crop applied' : 'Full frame'}`;
   syncLibraryState();
@@ -282,17 +290,19 @@ function updateTime() {
   const clip = current(); const position = clip ? offset(selected) + Math.max(0, Math.min(clip.end, video.currentTime || clip.start) - clip.start) / clip.speed : 0;
   const fade = transitionLength(selected), progress = clip && fade ? Math.max(0, Math.min(1, (position - (offset(selected) + length(clip) - fade)) / fade)) : 0;
   const next = project.clips[selected + 1];
-  if (next && fade && progress > 0 && preloadVideo.readyState >= 1) {
+  if (next && fade && progress > 0 && preloadVideo.readyState >= 2 && !preloadVideo.seeking) {
     const target = next.start + fade * progress * next.speed;
-    if (Math.abs(preloadVideo.currentTime - target) > (playing ? 0.12 : 0.02)) preloadVideo.currentTime = target;
     preloadVideo.playbackRate = next.speed;
-    preloadVideo.muted = false;
-    preloadVideo.volume = next.volume * progress;
-    video.volume = clip.volume * (1 - progress);
-    $('next-viewport').style.opacity = progress;
-    if (playing && preloadVideo.paused && !preloadVideo.seeking) preloadVideo.play().catch(() => {});
+    if (!playing && Math.abs(preloadVideo.currentTime - target) > 0.02) preloadVideo.currentTime = target;
+    if (playing && preloadVideo.paused) preloadVideo.play().catch(() => {});
+    const readyToBlend = !preloadVideo.seeking && (!playing || !preloadVideo.paused);
+    preloadVideo.muted = !readyToBlend;
+    preloadVideo.volume = readyToBlend ? next.volume * progress : 0;
+    video.volume = readyToBlend ? clip.volume * (1 - progress) : clip.volume;
+    $('next-viewport').style.opacity = readyToBlend ? progress : 0;
   } else {
     $('next-viewport').style.opacity = 0;
+    preloadVideo.muted = true;
     if (!preloadVideo.paused) preloadVideo.pause();
     if (clip) video.volume = clip.volume;
   }
@@ -309,7 +319,7 @@ function nextClip() {
   if (!playing) return;
   if (selected >= project.clips.length - 1) { stop(); updateTime(); return; }
   const nextIndex = selected + 1, next = project.clips[nextIndex];
-  if (preloadVideo.dataset.mediaId === next.mediaId && preloadVideo.readyState >= 2 && !preloadVideo.paused) {
+  if (preloadVideo.dataset.mediaId === next.mediaId && preloadVideo.readyState >= 2 && !preloadVideo.seeking && !preloadVideo.paused) {
     const oldVideo = video, oldViewport = $('crop-viewport'), activeViewport = $('next-viewport');
     oldVideo.pause(); oldVideo.muted = true; oldVideo.id = 'video-preload'; preloadVideo.id = 'video';
     oldViewport.id = 'next-viewport'; activeViewport.id = 'crop-viewport';
@@ -363,6 +373,11 @@ function trim(key, value) {
   if (!Number.isFinite(n) || n < 0 || n > media.duration || (key === 'start' ? clip.end - n : n - clip.start) < 0.08) { toast('Keep at least 0.08 seconds, within the source video.'); renderControls(); return; }
   remember(); clip[key] = n; selectClip(selected); renderTimeline(); save();
 }
+const transitionLabel = document.createElement('label'); transitionLabel.className = 'select-label'; transitionLabel.textContent = 'Transition to next clip';
+const transitionAfter = document.createElement('select'); transitionAfter.id = 'transition-after';
+for (const [value, label] of [['default', 'Project default'], ['0', 'Hard cut'], ['0.35', 'Quick dissolve · 0.35s'], ['0.6', 'Smooth dissolve · 0.6s'], ['1', 'Gentle dissolve · 1s']]) transitionAfter.add(new Option(label, value));
+transitionAfter.onchange = event => { const clip = current(); if (!clip || selected === project.clips.length - 1) return; remember(); const value = event.target.value; clip.cutAfter = value === '0'; if (value === 'default' || value === '0') delete clip.transitionAfter; else clip.transitionAfter = Number(value); renderTimeline(); save(); };
+transitionLabel.append(transitionAfter); $('trim-section').append(transitionLabel);
 $('trim-start').onchange = e => trim('start', e.target.value); $('trim-end').onchange = e => trim('end', e.target.value);
 $('mark-start').onclick = () => trim('start', video.currentTime); $('mark-end').onclick = () => trim('end', video.currentTime);
 for (const key of ['brightness', 'contrast', 'saturation', 'volume']) {
@@ -435,6 +450,7 @@ $('project-input').onchange = async e => {
     allMedia = await api('/api/library');
     validateMusic(data.music === undefined ? [] : data.music);
     for (const clip of data.clips) { const m = allMedia.find(media => media.id === clip.mediaId); if (m && clip.crop != null && !FrameCrop.valid(clip.crop, m)) throw new Error('This project contains an invalid crop.'); if (!m || m.type === 'audio') throw new Error('This project needs videos that are not in this computer’s library.'); for (const k of ['start', 'end', 'speed', 'volume', 'brightness', 'contrast', 'saturation']) if (!Number.isFinite(clip[k])) throw new Error('This project contains invalid clip settings.'); if (clip.start < 0 || clip.end > m.duration || clip.end - clip.start < 0.08 || clip.speed < 0.5 || clip.speed > 7 || clip.volume < 0 || clip.volume > 1 || Math.abs(clip.brightness) > 0.5 || clip.contrast < 0.5 || clip.contrast > 2 || clip.saturation < 0 || clip.saturation > 2) throw new Error('This project contains invalid clip settings.'); }
+    if (data.clips.some(clip => clip.transitionAfter !== undefined && (!Number.isFinite(clip.transitionAfter) || clip.transitionAfter < 0 || clip.transitionAfter > 1.5))) throw new Error('This project contains an invalid transition.');
     if (!['source', '16:9', '9:16', '1:1'].includes(data.settings.aspect) || typeof data.settings.text !== 'string') throw new Error('This project contains invalid canvas settings.');
     remember(); save(); project = { id: crypto.randomUUID(), name: data.name.slice(0, 60), mediaIds: data.mediaIds || data.clips.map(clip => clip.mediaId), clips: data.clips, music: data.music || [], settings: { ...defaults().settings, ...data.settings, text: data.settings.text.slice(0, 120) } }; $('media-search').value = ''; restore(); toast('Project opened and added to Projects.');
   } catch (error) { toast(error.message); } finally { e.target.value = ''; }
