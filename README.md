@@ -49,7 +49,7 @@ Music edits and source references are included in automatic saving and **Save pr
 
 ## Quality and limitations
 
-- Exports use FFmpeg, H.264 video, AAC audio, and adjustable CRF quality. Excellent uses CRF 18. Source resolution and frame rate (up to 60 fps) are the defaults. 720p, 1080p, and 4K options refer to the short edge, respecting the canvas orientation.
+- Exports use FFmpeg, browser-compatible H.264 `yuv420p` video, AAC audio, and adjustable CRF quality. Excellent uses CRF 18. Source resolution and frame rate (up to 60 fps) are the defaults. 720p, 1080p, and 4K options refer to the short edge, respecting the canvas orientation. Completed MP4 download links continue to work after restarting the local app while the export file remains in `data/exports`.
 - Increasing resolution cannot recreate detail missing from a source. This version exports standard 8-bit SDR; it does not implement HDR tone mapping or professional color management.
 - Browser color/text preview is approximate. Export uses FFmpeg's color and text filters. Audio speed changes preserve pitch.
 - Browser playback depends on supported codecs. H.264 MP4 works best. FFmpeg can import/export additional formats whose browser preview may be unavailable.

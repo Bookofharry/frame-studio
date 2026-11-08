@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const ffmpeg = require('ffmpeg-static');
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'frame-test-'));
@@ -38,7 +39,9 @@ test('renders trims, speed, colors, text, joined clips and silence into a playab
   assert.equal(job.status, 'complete', JSON.stringify(job)); assert.equal(job.progress, 100);
   const download = await fetch(`${base}/api/exports/${id}/download`); assert.equal(download.status, 200);
   const output = path.join(fixtures, 'verified-export.mp4'); fs.writeFileSync(output, Buffer.from(await download.arrayBuffer()));
-  const info = await probe(output); const video = info.streams.find(s => s.codec_type === 'video'); assert.equal(video.codec_name, 'h264'); assert.equal(video.width, 1280); assert.equal(video.height, 720); assert.equal(video.avg_frame_rate, '30/1'); assert.ok(Math.abs(Number(info.format.duration) - (3 - 1 / 3)) < 0.12); assert.ok(info.streams.some(s => s.codec_type === 'audio' && s.codec_name === 'aac'));
+  const info = await probe(output); const video = info.streams.find(s => s.codec_type === 'video'); assert.equal(video.codec_name, 'h264'); assert.equal(video.pix_fmt, 'yuv420p', 'Joined MP4 uses browser-compatible 4:2:0 video'); assert.equal(video.width, 1280); assert.equal(video.height, 720); assert.equal(video.avg_frame_rate, '30/1'); assert.ok(Math.abs(Number(info.format.duration) - (3 - 1 / 3)) < 0.12); assert.ok(info.streams.some(s => s.codec_type === 'audio' && s.codec_name === 'aac'));
+  const restoredId = randomUUID(); fs.copyFileSync(path.join(temporary, 'exports', `${id}.mp4`), path.join(temporary, 'exports', `${restoredId}.mp4`));
+  const restoredDownload = await fetch(`${base}/api/exports/${restoredId}/download`); assert.equal(restoredDownload.status, 200, 'Completed MP4 remains downloadable without an in-memory export job');
 });
 test('blocks cross-origin local requests', async () => {
   const response = await fetch(`${base}/api/library`, { headers: { Origin: 'https://example.com' } }); assert.equal(response.status, 403);
@@ -77,7 +80,7 @@ test('joins three different videos into one MP4 in the selected order', { timeou
   for (let i = 0; i < 120; i++) { job = await (await fetch(`${base}/api/exports/${id}`)).json(); if (job.status !== 'rendering') break; await new Promise(resolve => setTimeout(resolve, 250)); }
   assert.equal(job.status, 'complete', JSON.stringify(job));
   const result = path.join(fixtures, 'verified-join.mp4'); fs.writeFileSync(result, Buffer.from(await (await fetch(`${base}/api/exports/${id}/download`)).arrayBuffer()));
-  const info = await probe(result); assert.ok(Math.abs(Number(info.format.duration) - (3 - 2 / 3)) < 0.12);
+  const info = await probe(result); assert.equal(info.streams.find(s => s.codec_type === 'video').pix_fmt, 'yuv420p'); assert.ok(Math.abs(Number(info.format.duration) - (3 - 2 / 3)) < 0.12);
   for (const [index, channel] of [2, 0, 1].entries()) {
     const pixel = execFileSync(ffmpeg, ['-v', 'error', '-ss', String(0.3 + index * 0.83), '-i', result, '-frames:v', '1', '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { windowsHide: true });
     assert.equal(pixel.length, 3); assert.ok(pixel[channel] > 220, `Clip ${index + 1} has its expected color`);

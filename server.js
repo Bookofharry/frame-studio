@@ -279,7 +279,7 @@ async function render(job, project) {
         }
         elapsed += (clips[index].end - clips[index].start) / clips[index].speed - duration;
       }
-      args.push('-filter_complex', filters.join(';'), '-map', `[v${clips.length - 1}]`, '-map', `[a${clips.length - 1}]`, '-t', String(total), '-c:v', 'libx264', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', joined);
+      args.push('-filter_complex', filters.join(';'), '-map', `[v${clips.length - 1}]`, '-map', `[a${clips.length - 1}]`, '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', joined);
       await run(args, total, 0);
     } else {
       fs.writeFileSync(path.join(work, 'clips.txt'), clips.map((_, i) => `file '${i}.mp4'`).join('\n'));
@@ -298,6 +298,11 @@ async function render(job, project) {
       await run(args, total, 0);
     }
     if (job.status !== 'cancelled') {
+      const outputInfo = await probe(output);
+      const videoStream = outputInfo.streams.find(stream => stream.codec_type === 'video');
+      if (videoStream?.codec_name !== 'h264' || videoStream.pix_fmt !== 'yuv420p' || !outputInfo.streams.some(stream => stream.codec_type === 'audio' && stream.codec_name === 'aac')) {
+        throw Object.assign(new Error('Export did not produce a browser-compatible H.264/AAC MP4. Please try exporting again.'), { status: 422 });
+      }
       const used = music.filter(c => c.at < total && c.volume > 0);
       await catalog.exported(used);
       job.credits = catalog.credits(used);
@@ -333,8 +338,12 @@ app.delete('/api/exports/:id', (req, res) => {
   res.json({ ok: true });
 });
 app.get('/api/exports/:id/download', (req, res) => {
-  if (jobs.get(req.params.id)?.status !== 'complete') return res.sendStatus(404);
-  res.download(path.join(root, 'exports', `${req.params.id}.mp4`), 'Frame-export.mp4');
+  const id = req.params.id;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return res.sendStatus(404);
+  if (jobs.has(id) && jobs.get(id).status !== 'complete') return res.sendStatus(404);
+  const file = path.join(root, 'exports', `${id}.mp4`);
+  if (!fs.existsSync(file)) return res.sendStatus(404);
+  res.download(file, 'Frame-export.mp4');
 });
 app.get('/api/exports/:id/credits', (req, res) => {
   if (jobs.get(req.params.id)?.status !== 'complete' || !jobs.get(req.params.id)?.credits) return res.sendStatus(404);
