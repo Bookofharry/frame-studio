@@ -10,10 +10,12 @@ For faster playback, select a clip and choose **Audio → Playback speed → 7×
 
 1. Move the playhead to the time where a video should start, then click **Import** and select one or more files. Videos imported through the import area or file picker start at that time. Drag a library thumbnail or a video file onto the timeline for precise placement; the drop marker shows its start time. Inserting inside an existing clip splits that clip and resumes it after the new video. Use **Add at playhead** on a library card to reuse the full source. Search finds videos by filename. Each project has its own media library. **New** starts a separate project with an empty library and timeline; **Projects** lists saved projects so you can switch back to earlier edits.
 2. Select a clip on the full-width timeline. Drag its left or right edge to trim; the player and library show the change immediately. Drag the middle of a clip to reorder it. Neighboring clips stay connected. Use the ruler or drag the white playhead to seek. The zoom slider and **Fit** control how much of the timeline you see.
-3. Use **Video**, **Audio**, **Adjust**, and **Text** in the right inspector for exact trim values, crop/canvas settings, original audio volume, speed, color, and the global title. **Crop** in the timeline toolbar opens the draggable crop selection. Original canvas uses the first clip's cropped dimensions; other canvas shapes fit cropped clips with padding where needed.
+3. Use **Video**, **Audio**, **Adjust**, and **Text** in the right inspector for exact trim values, crop/canvas settings, original audio volume, speed, color, and timed text overlays. **Crop** in the timeline toolbar opens the draggable crop selection. Original canvas uses the first clip's cropped dimensions; other canvas shapes fit cropped clips with padding where needed.
 4. Click the single **Export** button in the top right, choose quality and resolution, and wait for rendering. Click **Download MP4** to save every timeline clip as one video.
 
 Use **+ Black screen** above the timeline to insert a silent black clip at the playhead. Choose a duration from 0.1 to 60 seconds. The clip can be trimmed, moved, duplicated, undone, saved with the project, and exported like other video clips. You can also reuse it from Project media.
+
+Use **+ Add text** above the timeline or **Text → Add text at playhead** in the inspector. Choose a duration before adding, then edit the words, start time, and duration in the inspector. Text has its own lane below video: drag the clip to move it, or drag an edge to change when it appears. Multiple text clips can overlap; preview and export show them only within their intervals. Older full-video titles become a full-length text clip when opened.
 
 Space plays or pauses; Left/Right step through time (Shift steps ten frames). Ctrl+B splits at the playhead, Delete removes the selected clip, and Ctrl+D duplicates it. Ctrl+Z undoes; Ctrl+Shift+Z or Ctrl+Y redoes. Home/End go to the beginning/end. Projects automatically save in this browser. **Save project** saves the current edit to the local project list. **Projects** shows recent projects and lets you open one without losing the current edit. Use **Download current backup** or **Import project file** in that dialog to move a project JSON file. Existing project files remain compatible.
 
@@ -56,7 +58,7 @@ Music edits and source references are included in automatic saving and **Save pr
 - Browser color/text preview is approximate. Export uses FFmpeg's color and text filters. Audio speed changes preserve pitch.
 - Browser playback depends on supported codecs. H.264 MP4 works best. FFmpeg can import/export additional formats whose browser preview may be unavailable.
 - Maximum import: 20 files at a time, 8 GB per file. One export runs at a time. Large/4K exports require free disk space and may take time.
-- This version supports sequential clips, cross dissolves, original audio, a global title, cuts, trim, crop, speed, and basic color. It also supports imported music and sound effects with independent placement, trim, and volume. It does not yet include animated titles or automatic captions.
+- This version supports sequential clips, cross dissolves, original audio, timed text clips, cuts, trim, crop, speed, and basic color. It also supports imported music and sound effects with independent placement, trim, and volume. It does not yet include animated titles or automatic captions.
 
 ## Files and privacy
 

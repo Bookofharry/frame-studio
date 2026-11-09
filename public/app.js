@@ -3,7 +3,7 @@ let video = $('video'), preloadVideo = $('video-preload');
 const nextViewport = document.createElement('div'); nextViewport.id = 'next-viewport';
 $('video-frame').insertBefore(nextViewport, $('title-preview')); nextViewport.append(preloadVideo);
 const cropFor = clip => clip.crop || FrameCrop.full(mediaFor(clip));
-const defaults = () => ({ id: crypto.randomUUID(), name: 'Untitled project', mediaIds: [], clips: [], music: [], settings: { aspect: 'source', text: '', resolution: 'source', fps: 'source', quality: '18', transitionDuration: 0.35 } });
+const defaults = () => ({ id: crypto.randomUUID(), name: 'Untitled project', mediaIds: [], clips: [], music: [], textClips: [], settings: { aspect: 'source', text: '', resolution: 'source', fps: 'source', quality: '18', transitionDuration: 0.35 } });
 let project = defaults(), library = [], allMedia = [], selected = -1, history = [], future = [], playing = false, importing = false, jobId = null, pollTimer, toastTimer;
 let pixelsPerSecond = 60, timelineGesture = null, gestureMoved = false, previewFrame = 0;
 let previewGeneration = 0;
@@ -199,7 +199,7 @@ function renderTimeline() {
   });
   $('clip-count').textContent = `${project.clips.length} clip${project.clips.length === 1 ? '' : 's'}`;
   $('total-time').textContent = time(total()); $('scrubber').max = total() || 1;
-  const extent = Math.max(total(), ...(project.music || []).map(clip => clip.at + clip.end - clip.start));
+  const extent = Math.max(total(), ...(project.music || []).map(clip => clip.at + clip.end - clip.start), ...(project.textClips || []).map(clip => clip.at + clip.duration));
   const width = Math.max($('timeline-scroll').clientWidth, extent * pixelsPerSecond + 180);
   $('timeline-content').style.width = `${width}px`;
   const interval = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600].find(value => value * pixelsPerSecond >= 70) || 3600;
@@ -214,6 +214,7 @@ function renderTimeline() {
   $('join-summary').textContent = project.clips.length ? `${time(total())} total · ${Number(project.settings.transitionDuration ?? 0.35) ? 'Cross dissolve' : 'Hard cuts'} · One exported video` : 'Drop media onto the track to start';
   syncLibraryState();
   renderMusic();
+  renderText();
   updateTime();
 }
 function stop() { playing = false; previewGeneration++; cancelAnimationFrame(previewFrame); video.pause(); preloadVideo.pause(); pauseMusic(); stopCatalogPreview(); $('play').textContent = '▶'; $('play').setAttribute('aria-label', 'Play timeline'); }
@@ -239,6 +240,7 @@ function selectClip(index, at, resume = false) {
   video.muted = false;
   preloadVideo.pause(); $('next-viewport').style.opacity = 0;
   selectedMusicId = '';
+  selectedTextId = '';
   selected = index; const clip = current(), media = mediaFor(clip);
   showSelectedClip();
   if (!clip || !media) { video.dataset.mediaId = ''; video.removeAttribute('src'); video.load(); preloadFollowing(-1); updateTime(); return; }
@@ -283,7 +285,7 @@ function applyPreview() {
   }
   positionPlayer(video, $('crop-viewport'), clip);
   if (project.clips[selected + 1] && mediaFor(project.clips[selected + 1])) positionPlayer(preloadVideo, $('next-viewport'), project.clips[selected + 1]);
-  $('title-preview').textContent = project.settings.text; $('title-preview').style.fontSize = `${height * 0.045}px`;
+  $('title-preview').style.fontSize = `${height * 0.045}px`;
   $('player-format').textContent = project.settings.aspect === 'source' ? 'Original' : project.settings.aspect;
 }
 function updateTime() {
@@ -311,6 +313,7 @@ function updateTime() {
   for (const id of ['ruler', 'timeline-playhead']) { $(id).setAttribute('aria-valuemax', total()); $(id).setAttribute('aria-valuenow', position); $(id).setAttribute('aria-valuetext', time(position, 2)); }
   if (playing && !timelineGesture) { const viewport = $('timeline-scroll'); const x = position * pixelsPerSecond; if (x > viewport.scrollLeft + viewport.clientWidth - 25 || x < viewport.scrollLeft) viewport.scrollLeft = Math.max(0, x - 80); }
   syncMusic(position);
+  syncText(position);
 }
 function seekTimeline(position) {
   for (let index = 0; index < project.clips.length; index++) { const clip = project.clips[index], start = offset(index); if (position < start + length(clip) || index === project.clips.length - 1) { selectClip(index, clip.start + (position - start) * clip.speed, playing); renderTimeline(); $('scrubber').value = position; return; } }
@@ -413,17 +416,20 @@ $('split').onclick = () => {
   if (position - clip.start < 0.08 || clip.end - position < 0.08) return toast('Move the playhead inside the clip before splitting.');
   remember(); const right = { ...clip, id: crypto.randomUUID(), start: position }; clip.end = position; project.clips.splice(selected + 1, 0, right); selectClip(selected + 1); renderTimeline(); save(); toast('Clip split at the playhead.');
 };
-$('remove').onclick = () => { if (selectedMusicId) return removeMusic(); if (!current()) return; remember(); project.clips.splice(selected, 1); selectClip(project.clips.length ? Math.min(selected, project.clips.length - 1) : -1); renderTimeline(); save(); };
+$('remove').onclick = () => { if (selectedTextId) return removeText(); if (selectedMusicId) return removeMusic(); if (!current()) return; remember(); project.clips.splice(selected, 1); selectClip(project.clips.length ? Math.min(selected, project.clips.length - 1) : -1); renderTimeline(); save(); };
 function move(direction) { const next = selected + direction; if (next < 0 || next >= project.clips.length) return; remember(); [project.clips[selected], project.clips[next]] = [project.clips[next], project.clips[selected]]; selectClip(next); renderTimeline(); save(); }
 $('move-left').onclick = () => move(-1); $('move-right').onclick = () => move(1);
 $('timeline-earlier').onclick = () => move(-1); $('timeline-later').onclick = () => move(1);
 $('play-all').onclick = () => { if (!project.clips.length) return; selectClip(0); renderTimeline(); $('play').click(); };
-function restore() { refreshProjectLibrary(); $('project-name').value = project.name; $('aspect').value = project.settings.aspect; $('title-text').value = project.settings.text; for (const key of ['resolution', 'fps', 'quality']) $(key).value = project.settings[key]; selectClip(project.clips.length ? Math.max(0, Math.min(selected, project.clips.length - 1)) : -1); renderTimeline(); save(); }
+function migrateLegacyText() {
+  project.textClips ||= [];
+  if (project.settings.text) { project.textClips.push({ id: crypto.randomUUID(), text: project.settings.text, at: 0, duration: Math.max(total(), 1) }); project.settings.text = ''; }
+}
+function restore() { migrateLegacyText(); refreshProjectLibrary(); $('project-name').value = project.name; $('aspect').value = project.settings.aspect; for (const key of ['resolution', 'fps', 'quality']) $(key).value = project.settings[key]; selectClip(project.clips.length ? Math.max(0, Math.min(selected, project.clips.length - 1)) : -1); renderTimeline(); save(); }
 $('undo').onclick = () => { if (importing) return toast('Wait for the import to finish before undoing.'); if (!history.length) return; future.push(JSON.stringify(project)); project = JSON.parse(history.pop()); restore(); };
 $('redo').onclick = () => { if (importing) return toast('Wait for the import to finish before redoing.'); if (!future.length) return; history.push(JSON.stringify(project)); project = JSON.parse(future.pop()); restore(); };
 $('duplicate').onclick = () => { if (!current() || project.clips.length >= 100) return; remember(); const copy = JSON.parse(JSON.stringify(current())); copy.id = crypto.randomUUID(); project.clips.splice(selected + 1, 0, copy); selectClip(selected + 1); renderTimeline(); save(); };
 $('aspect').onchange = e => { remember(); project.settings.aspect = e.target.value; applyPreview(); save(); renderTimeline(); };
-$('title-text').onfocus = remember; $('title-text').oninput = e => { project.settings.text = e.target.value; applyPreview(); save(); $('undo').disabled = !history.length; };
 $('project-name').onchange = e => { project.name = e.target.value.trim() || 'Untitled project'; save(); };
 function downloadProjectBackup() {
   const url = URL.createObjectURL(new Blob([JSON.stringify({ version: 1, ...project }, null, 2)], { type: 'application/json' }));
@@ -469,10 +475,11 @@ $('project-input').onchange = async e => {
     if (data.mediaIds !== undefined && (!Array.isArray(data.mediaIds) || data.mediaIds.some(id => typeof id !== 'string'))) throw new Error('This project contains an invalid media list.');
     allMedia = await api('/api/library');
     validateMusic(data.music === undefined ? [] : data.music);
+    validateText(data.textClips === undefined ? [] : data.textClips);
     for (const clip of data.clips) { const m = allMedia.find(media => media.id === clip.mediaId); if (m && clip.crop != null && !FrameCrop.valid(clip.crop, m)) throw new Error('This project contains an invalid crop.'); if (!m || m.type === 'audio') throw new Error('This project needs videos that are not in this computer’s library.'); for (const k of ['start', 'end', 'speed', 'volume', 'brightness', 'contrast', 'saturation']) if (!Number.isFinite(clip[k])) throw new Error('This project contains invalid clip settings.'); if (clip.start < 0 || clip.end > m.duration || clip.end - clip.start < 0.08 || clip.speed < 0.5 || clip.speed > 7 || clip.volume < 0 || clip.volume > 1 || Math.abs(clip.brightness) > 0.5 || clip.contrast < 0.5 || clip.contrast > 2 || clip.saturation < 0 || clip.saturation > 2) throw new Error('This project contains invalid clip settings.'); }
     if (data.clips.some(clip => clip.transitionAfter !== undefined && (!Number.isFinite(clip.transitionAfter) || clip.transitionAfter < 0 || clip.transitionAfter > 1.5))) throw new Error('This project contains an invalid transition.');
     if (!['source', '16:9', '9:16', '1:1'].includes(data.settings.aspect) || typeof data.settings.text !== 'string') throw new Error('This project contains invalid canvas settings.');
-    remember(); save(); project = { id: crypto.randomUUID(), name: data.name.slice(0, 60), mediaIds: data.mediaIds || data.clips.map(clip => clip.mediaId), clips: data.clips, music: data.music || [], settings: { ...defaults().settings, ...data.settings, text: data.settings.text.slice(0, 120) } }; $('media-search').value = ''; restore(); toast('Project opened and added to Projects.');
+    remember(); save(); project = { id: crypto.randomUUID(), name: data.name.slice(0, 60), mediaIds: data.mediaIds || data.clips.map(clip => clip.mediaId), clips: data.clips, music: data.music || [], textClips: data.textClips || [], settings: { ...defaults().settings, ...data.settings, text: data.settings.text.slice(0, 120) } }; $('media-search').value = ''; restore(); toast('Project opened and added to Projects.');
   } catch (error) { toast(error.message); } finally { e.target.value = ''; }
 };
 $('new-project').onclick = () => { $('new-project-name').value = `Untitled project ${projectIndex().length + 1}`; $('new-dialog').showModal(); }; $('keep-project').onclick = () => $('new-dialog').close();
@@ -761,5 +768,6 @@ $('timeline-scroll').addEventListener('drop', event => {
 });
 new ResizeObserver(() => { applyPreview(); if (!timelineGesture) renderTimeline(); }).observe($('preview-stage'));
 setupMusic();
+setupText();
 setupCatalog();
 init();

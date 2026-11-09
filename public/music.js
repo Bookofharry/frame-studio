@@ -86,7 +86,7 @@ async function importMusic(files) {
   finally { importing = false; $('import-music').disabled = false; $('music-import-status').textContent = ''; $('music-input').value = ''; }
 }
 function selectMusic(id) {
-  stop(); selectedMusicId = id; setInspector('audio'); renderTimeline();
+  stop(); selectedTextId = ''; selectedMusicId = id; setInspector('audio'); renderTimeline();
   $('music-settings').scrollIntoView({ block: 'nearest' });
 }
 function removeMusic() {

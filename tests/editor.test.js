@@ -56,6 +56,20 @@ test('creates a reusable black screen and exports black frames for its chosen du
   const introVideo = (await probe(introPath)).streams.find(stream => stream.codec_type === 'video');
   assert.equal(introVideo.width, 360); assert.equal(introVideo.height, 640, 'A black intro follows the first real video’s portrait canvas');
 });
+test('timed text appears only during its chosen interval', { timeout: 90000 }, async () => {
+  const black = (await (await fetch(`${base}/api/media/black`, { method: 'POST' })).json());
+  const invalid = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips: [{ mediaId: black.id, end: 3 }], textClips: [{ text: 'Title', at: 1, duration: 0 }] }) });
+  assert.equal(invalid.status, 400, 'Invalid text duration is rejected');
+  const response = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips: [{ mediaId: black.id, end: 3 }], textClips: [{ text: 'TIMED TITLE', at: 1, duration: 1 }] }) });
+  assert.equal(response.status, 200); const { id } = await response.json(); let job;
+  for (let i = 0; i < 120; i++) { job = await (await fetch(`${base}/api/exports/${id}`)).json(); if (job.status !== 'rendering') break; await new Promise(resolve => setTimeout(resolve, 250)); }
+  assert.equal(job.status, 'complete', JSON.stringify(job));
+  const output = path.join(fixtures, 'verified-timed-text.mp4'); fs.writeFileSync(output, Buffer.from(await (await fetch(`${base}/api/exports/${id}/download`)).arrayBuffer()));
+  const sample = at => execFileSync(ffmpeg, ['-v', 'error', '-ss', String(at), '-i', output, '-frames:v', '1', '-vf', 'crop=480:100:400:600,scale=80:20', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { windowsHide: true });
+  assert.ok([...sample(0.5)].every(channel => channel < 10), 'No text appears before the selected start');
+  assert.ok([...sample(1.5)].some(channel => channel > 100), 'Text appears during the selected duration');
+  assert.ok([...sample(2.5)].every(channel => channel < 10), 'Text disappears at the selected end');
+});
 test('renders trims, speed, colors, text, joined clips and silence into a playable MP4', { timeout: 90000 }, async () => {
   const response = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips: [{ mediaId: imported[0].id, start: 0.5, end: 2.5, speed: 2, brightness: 0.05, contrast: 1.1, saturation: 1.2, volume: 0.5 }, { mediaId: imported[1].id, start: 0, end: 1, speed: 0.5 }], settings: { aspect: '16:9', resolution: '720', fps: '30', quality: '18', text: "Frame: 100% yours, 'hello'" } }) });
   assert.equal(response.status, 200); const { id } = await response.json(); let job;
@@ -170,6 +184,7 @@ test('imports music with a browser preview and rejects invalid soundtracks', asy
 test('mixes trimmed music at the chosen time and volume while retaining source sound', { timeout: 90000 }, async () => {
   const project = {
     clips: [{ mediaId: imported[0].id }, { mediaId: imported[1].id, end: 1 }],
+    textClips: [{ text: 'Music and text', at: 0.5, duration: 1 }],
     music: [
       { mediaId: soundtrack.id, start: 1.2, end: 2.2, at: 0.5, volume: 0.25 },
       { mediaId: soundtrack.id, start: 1.2, end: 2.2, at: 3.35, volume: 0.5 },

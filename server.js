@@ -209,8 +209,13 @@ function validateProject(body) {
     if (end - start < 0.08) throw new Error('Each music clip must be at least 0.08 seconds long.');
     return { media, start, end, at: number(c.at, 0, 0, 86400), volume: number(c.volume, 0.5, 0, 1) };
   });
+  if (body.textClips !== undefined && (!Array.isArray(body.textClips) || body.textClips.length > 20)) throw new Error('Use up to 20 text clips.');
+  const textClips = (body.textClips || []).map(clip => {
+    if (typeof clip.text !== 'string' || clip.text.length > 120) throw new Error('Each text clip must contain up to 120 characters.');
+    return { text: clip.text, at: number(clip.at, 0, 0, 86400), duration: number(clip.duration, 3, 0.1, 3600) };
+  });
   catalog.assertLicensed(music.map(clip => clip.media));
-  return { clips, music, settings: { resolution, aspect, quality, fps, text, transitionDuration } };
+  return { clips, music, textClips, settings: { resolution, aspect, quality, fps, text, transitionDuration } };
 }
 function overlap(clips, index, duration) {
   if (index < 0 || index >= clips.length - 1) return 0;
@@ -233,15 +238,16 @@ function dimensions(media, settings) {
 async function render(job, project) {
   const work = path.join(root, 'temp', job.id);
   fs.mkdirSync(work, { recursive: true });
-  const { clips, music, settings } = project;
+  const { clips, music, textClips, settings } = project;
   const canvasClip = clips.find(clip => clip.media.generated !== 'black') || clips[0];
   const [w, h] = dimensions(canvasClip.crop, settings);
   const fps = settings.fps === 'source' ? Math.min(60, Math.max(1, canvasClip.media.fps)) : Number(settings.fps);
   job.width = w; job.height = h;
-  if (settings.text) fs.writeFileSync(path.join(work, 'title.txt'), settings.text);
   const font = process.platform === 'win32' ? 'C:/Windows/Fonts/arial.ttf' : '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
-  if (settings.text) fs.copyFileSync(font, path.join(work, 'font.ttf'));
   const total = clips.reduce((sum, c, index) => sum + (c.end - c.start) / c.speed - overlap(clips, index, settings.transitionDuration), 0);
+  const timedText = [...textClips, ...(settings.text ? [{ text: settings.text, at: 0, duration: total }] : [])].filter(clip => clip.text && clip.at < total);
+  const textLanes = [], textLayout = new Map();
+  timedText.map((clip, index) => ({ clip, index })).sort((a, b) => a.clip.at - b.clip.at || a.index - b.index).forEach(({ clip }) => { let lane = textLanes.findIndex(end => end <= clip.at); if (lane === -1) lane = textLanes.length; textLanes[lane] = clip.at + clip.duration; textLayout.set(clip, lane); });
   let completed = 0;
   const run = (args, duration, progressWeight = 1) => new Promise((resolve, reject) => {
     if (job.status === 'cancelled') return reject(new Error('Export cancelled'));
@@ -268,7 +274,6 @@ async function render(job, project) {
       const args = ['-ss', String(c.start), '-t', String(c.end - c.start), '-i', path.join(root, 'media', c.media.id)];
       if (!c.media.audio) args.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo');
       let vf = `setpts=(PTS-STARTPTS)/${c.speed},crop=${c.crop.width}:${c.crop.height}:${c.crop.x}:${c.crop.y}:exact=1,scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,eq=brightness=${c.brightness}:contrast=${c.contrast}:saturation=${c.saturation},fps=${fps},format=yuv420p`;
-      if (settings.text) vf += `,drawtext=fontfile=font.ttf:textfile=title.txt:expansion=none:fontcolor=white:fontsize=${Math.round(h * 0.045)}:box=1:boxcolor=black@0.5:boxborderw=12:x=(w-text_w)/2:y=h-text_h-h*0.08`;
       // Keep each tempo stage at or below 2x to avoid FFmpeg's sample-skipping mode.
       let tempo = c.speed; const tempoFilters = [];
       while (tempo > 2) { tempoFilters.push('atempo=2'); tempo /= 2; }
@@ -281,7 +286,7 @@ async function render(job, project) {
     job.message = 'Finishing your MP4'; job.progress = 96;
     const output = path.join(root, 'exports', `${job.id}.mp4`);
     const audible = music.filter(c => c.at < total && c.volume > 0);
-    const joined = audible.length ? 'joined.mp4' : output;
+    const joined = audible.length || timedText.length ? 'joined.mp4' : output;
     if (clips.length > 1 && clips.some((_, index) => overlap(clips, index, settings.transitionDuration) > 0)) {
       const args = clips.flatMap((_, index) => ['-i', `${index}.mp4`]);
       const filters = clips.map((_, index) => `[${index}:v]settb=AVTB,setpts=PTS-STARTPTS[base${index}]`);
@@ -305,9 +310,24 @@ async function render(job, project) {
       fs.writeFileSync(path.join(work, 'clips.txt'), clips.map((_, i) => `file '${i}.mp4'`).join('\n'));
       await run(['-f', 'concat', '-safe', '0', '-i', 'clips.txt', '-c', 'copy', '-movflags', '+faststart', joined], total, 0);
     }
+    let videoWithText = joined;
+    if (timedText.length) {
+      job.message = 'Adding timed text';
+      fs.copyFileSync(font, path.join(work, 'font.ttf'));
+      const filters = [];
+      timedText.forEach((clip, index) => {
+        fs.writeFileSync(path.join(work, `text-${index}.txt`), clip.text);
+        const input = index ? `t${index - 1}` : '0:v';
+        const end = Math.min(total, clip.at + clip.duration);
+        const bottom = (0.08 + (textLayout.get(clip) || 0) * 0.1).toFixed(2);
+        filters.push(`[${input}]drawtext=fontfile=font.ttf:textfile=text-${index}.txt:expansion=none:fontcolor=white:fontsize=${Math.round(h * 0.045)}:box=1:boxcolor=black@0.5:boxborderw=12:x=(w-text_w)/2:y=h-text_h-h*${bottom}:enable='between(t,${clip.at},${end})'[t${index}]`);
+      });
+      videoWithText = audible.length ? 'titled.mp4' : output;
+      await run(['-i', joined, '-filter_complex', filters.join(';'), '-map', `[t${timedText.length - 1}]`, '-map', '0:a:0', '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'copy', '-movflags', '+faststart', videoWithText], total, 0);
+    }
     if (audible.length) {
       job.message = 'Mixing music and original sound';
-      const args = ['-i', 'joined.mp4'];
+      const args = ['-i', videoWithText];
       const filters = ['[0:a]aresample=48000,aformat=channel_layouts=stereo,apad[original]'];
       audible.forEach((c, index) => {
         args.push('-ss', String(c.start), '-t', String(Math.min(c.end - c.start, total - c.at)), '-i', path.join(root, 'media', c.media.id));

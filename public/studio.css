@@ -41,6 +41,19 @@ dialog{width:min(500px,calc(100% - 24px));background:#20252b;color:var(--text);b
 .timeline-clip.black-screen{background:#080808;border-color:#657079}
 .timeline-clip.black-screen .clip-body{background-color:#090909;background-blend-mode:normal}
 @media(max-width:560px){.timeline-subheading{height:auto;min-height:34px;flex-wrap:wrap;gap:4px}.timeline-add{gap:6px;flex-wrap:wrap;justify-content:flex-end}.timeline-add .text-button{font-size:8px}}
+#title-preview{inset:0;left:0;bottom:0;transform:none;max-width:none;background:none;padding:0}
+.preview-text{position:absolute;left:50%;transform:translateX(-50%);display:block;max-width:96%;padding:4px 8px;background:#0008;white-space:pre-wrap;text-align:center;color:white;line-height:1.25}
+.text-tracks{position:relative;min-height:46px;background:#24221e;border-bottom:1px solid #4d4535}
+.text-track-header{display:flex;align-items:flex-start;gap:8px;padding:14px 12px;color:#ecd8a5;background:#2b271f;min-height:46px}
+.text-track-header strong{font-size:10px;font-weight:500}
+.text-clip{position:absolute;height:34px;min-width:2px;background:#775e31;border:1px solid #b5924a;border-radius:4px;cursor:grab;touch-action:none;user-select:none;color:#fff1d0}
+.text-clip.selected{border:2px solid #ffd475;background:#947239}
+.text-clip>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:9px 12px;font-size:9px;pointer-events:none}
+.text-handle{position:absolute;top:0;bottom:0;width:8px;cursor:ew-resize;background:#ffe2a555}
+.text-handle.start{left:0}.text-handle.end{right:0}.text-clip:not(.selected) .text-handle{opacity:0}
+.text-track-empty{margin:6px 12px;height:34px;border:1px dashed #8b7751;border-radius:4px;padding:6px 14px;color:#ddc998;font-size:10px}
+#text-controls{margin-top:13px}#text-controls .two-columns{margin-top:12px}#text-controls .select-label textarea{margin-top:7px;width:100%}
+#new-text-duration{display:block;width:100%;margin:7px 0 10px;padding:8px}
 .join-row-actions{display:flex;gap:4px}
 .join-row-actions .mini{min-width:28px;padding:6px}
 .join-row-actions .join-insert[aria-pressed="true"]{background:var(--accent);color:#0c322c}
