@@ -92,6 +92,10 @@ test('renders trims, speed, colors, text, joined clips and silence into a playab
   assert.equal(job.status, 'complete', JSON.stringify(job)); assert.equal(job.progress, 100);
   const download = await fetch(`${base}/api/exports/${id}/download`); assert.equal(download.status, 200);
   const output = path.join(fixtures, 'verified-export.mp4'); fs.writeFileSync(output, Buffer.from(await download.arrayBuffer()));
+  const namedDownload = await fetch(`${base}/api/exports/${id}/download?name=${encodeURIComponent('My Edit: Final.mp4')}`);
+  assert.equal(namedDownload.status, 200);
+  assert.match(namedDownload.headers.get('content-disposition'), /My Edit Final\.mp4/, 'Download uses the requested safe name once');
+  await namedDownload.arrayBuffer();
   const info = await probe(output); const video = info.streams.find(s => s.codec_type === 'video'); assert.equal(video.codec_name, 'h264'); assert.equal(video.pix_fmt, 'yuv420p', 'Joined MP4 uses browser-compatible 4:2:0 video'); assert.equal(video.width, 1280); assert.equal(video.height, 720); assert.equal(video.avg_frame_rate, '30/1'); assert.ok(Math.abs(Number(info.format.duration) - (3 - 1 / 3)) < 0.12); assert.ok(info.streams.some(s => s.codec_type === 'audio' && s.codec_name === 'aac'));
   const restoredId = randomUUID(); fs.copyFileSync(path.join(temporary, 'exports', `${id}.mp4`), path.join(temporary, 'exports', `${restoredId}.mp4`));
   const restoredDownload = await fetch(`${base}/api/exports/${restoredId}/download`); assert.equal(restoredDownload.status, 200, 'Completed MP4 remains downloadable without an in-memory export job');

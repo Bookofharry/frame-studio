@@ -274,7 +274,13 @@ async function main() {
     await page.locator('#resolution').selectOption('720'); await page.locator('#start-export').click();
     await page.waitForFunction(() => !document.getElementById('download-export').hidden || /failed|error/i.test(document.getElementById('export-message').textContent), { timeout: 90000 });
     assert.equal(await page.locator('#download-export').isVisible(), true, serverErrors.join('').slice(-6000));
-    const downloaded = page.waitForEvent('download'); await page.locator('#download-export').click(); await (await downloaded).saveAs('test-results/browser-export.mp4');
+    await page.locator('#download-export').click();
+    assert.equal(await page.locator('#filename-dialog').isVisible(), true, 'Download asks for a video name');
+    assert.equal(await page.locator('#export-filename').inputValue(), await page.locator('#project-name').inputValue(), 'The project name is suggested');
+    await page.locator('#export-filename').fill('My final edit: take 1.mp4');
+    const downloaded = page.waitForEvent('download'); await page.locator('#confirm-filename').click(); const namedVideo = await downloaded;
+    assert.equal(namedVideo.suggestedFilename(), 'My final edit take 1.mp4', 'Chosen name reaches the actual MP4 download');
+    await namedVideo.saveAs('test-results/browser-export.mp4');
     const brightPixels = at => {
       const frame = execFileSync(ffmpeg, ['-v', 'error', '-ss', String(at), '-i', 'test-results/browser-export.mp4', '-frames:v', '1', '-vf', 'crop=600:180:50:130', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { windowsHide: true });
       let count = 0; for (let i = 0; i < frame.length; i += 3) if (frame[i] > 220 && frame[i + 1] > 220 && frame[i + 2] > 220) count++;
