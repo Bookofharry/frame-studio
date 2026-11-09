@@ -200,6 +200,9 @@ async function main() {
     await page.evaluate(() => seekTimeline(1.2));
     await page.waitForFunction(() => document.querySelector('#title-preview .preview-text')?.textContent === 'Made with Frame');
     await page.locator('.text-clip').click();
+    await page.locator('#title-text').fill('This is a longer title that should wrap within the video frame instead of going off the sides');
+    assert.match(await page.locator('.preview-text').textContent(), /\n/, 'Long text wraps into lines in the preview');
+    await page.locator('#title-text').fill('Made with Frame');
     let previewText = await page.locator('.preview-text').boundingBox();
     await drag({ x: previewText.x + previewText.width / 2, y: previewText.y + previewText.height / 2 }, { x: previewText.x + previewText.width / 2 + 40, y: previewText.y + previewText.height / 2 - 30 });
     assert.ok(await page.evaluate(() => project.textClips[0].x > 0.5 && project.textClips[0].y < 0.88), 'Dragging text on the preview changes its saved position');

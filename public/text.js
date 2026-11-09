@@ -32,9 +32,12 @@ function syncText(position) {
   if (preview.dataset.signature === signature) return;
   preview.dataset.signature = signature;
   preview.replaceChildren(...active.map(clip => {
-    const node = document.createElement('span'); node.className = `preview-text${clip.id === selectedTextId ? ' selected' : ''}`; node.textContent = clip.text; node.dataset.textId = clip.id;
+    const node = document.createElement('span'); node.className = `preview-text${clip.id === selectedTextId ? ' selected' : ''}`; node.dataset.textId = clip.id;
+    const frame = $('video-frame');
+    node.textContent = FrameTextLayout.wrap(clip.text, frame.clientWidth / frame.clientHeight, textSize(clip));
     node.style.left = `${textX(clip) * 100}%`; node.style.top = `${textY(clip) * 100}%`;
-    node.style.fontSize = `${$('video-frame').clientHeight * textSize(clip)}px`;
+    node.style.fontSize = `${frame.clientHeight * textSize(clip)}px`;
+    node.style.padding = `${frame.clientHeight * FrameTextLayout.boxPadding}px`;
     if (clip.id === selectedTextId) { const handle = document.createElement('span'); handle.className = 'preview-text-resize'; handle.title = 'Drag to resize text'; handle.setAttribute('aria-label', 'Resize selected text'); node.append(handle); }
     return node;
   }));

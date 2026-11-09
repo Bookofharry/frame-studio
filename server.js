@@ -7,6 +7,7 @@ const { spawn } = require('node:child_process');
 const ffmpeg = require('ffmpeg-static');
 const ffprobe = require('ffprobe-static').path;
 const cropGeometry = require('./public/crop');
+const textLayout = require('./public/text-layout');
 const { createCatalog } = require('./audio-catalog');
 
 const root = process.env.FRAME_DATA_DIR || path.join(__dirname, 'data');
@@ -315,11 +316,11 @@ async function render(job, project) {
       fs.copyFileSync(font, path.join(work, 'font.ttf'));
       const filters = [];
       timedText.forEach((clip, index) => {
-        fs.writeFileSync(path.join(work, `text-${index}.txt`), clip.text);
+        fs.writeFileSync(path.join(work, `text-${index}.txt`), textLayout.wrap(clip.text, w / h, clip.size ?? 0.045));
         const input = index ? `t${index - 1}` : '0:v';
         const end = Math.min(total, clip.at + clip.duration);
         const x = clip.x ?? 0.5, y = clip.y ?? 0.88, size = clip.size ?? 0.045;
-        filters.push(`[${input}]drawtext=fontfile=font.ttf:textfile=text-${index}.txt:expansion=none:fontcolor=white:fontsize=${Math.round(h * size)}:box=1:boxcolor=black@0.5:boxborderw=12:x=w*${x}-text_w/2:y=h*${y}-text_h/2:enable='between(t,${clip.at},${end})'[t${index}]`);
+        filters.push(`[${input}]drawtext=fontfile=font.ttf:textfile=text-${index}.txt:expansion=none:fontcolor=white:fontsize=${Math.round(h * size)}:line_spacing=${Math.round(h * size * textLayout.lineSpacing)}:text_align=C:box=1:boxcolor=black@0.5:boxborderw=${Math.round(h * textLayout.boxPadding)}:x=w*${x}-text_w/2:y=h*${y}-text_h/2:enable='between(t,${clip.at},${end})'[t${index}]`);
       });
       videoWithText = audible.length ? 'titled.mp4' : output;
       await run(['-i', joined, '-filter_complex', filters.join(';'), '-map', `[t${timedText.length - 1}]`, '-map', '0:a:0', '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'copy', '-movflags', '+faststart', videoWithText], total, 0);

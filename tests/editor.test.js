@@ -71,6 +71,19 @@ test('timed text appears only during its chosen interval', { timeout: 90000 }, a
   assert.ok([...sample(2.5)].every(channel => channel < 10), 'Text disappears at the selected end');
   const lowerRight = execFileSync(ffmpeg, ['-v', 'error', '-ss', '1.5', '-i', output, '-frames:v', '1', '-vf', 'crop=400:180:800:500,scale=80:40', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { windowsHide: true });
   assert.ok([...lowerRight].every(channel => channel < 10), 'Export keeps the text at its chosen screen position');
+  const longTitle = 'This is a longer title that should wrap within the video frame instead of going off the sides';
+  const wrappedResponse = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips: [{ mediaId: black.id, end: 2 }], textClips: [{ text: longTitle, at: 0, duration: 2, x: 0.5, y: 0.5, size: 0.08 }] }) });
+  assert.equal(wrappedResponse.status, 200); const wrappedId = (await wrappedResponse.json()).id; let wrappedJob;
+  for (let i = 0; i < 120; i++) { wrappedJob = await (await fetch(`${base}/api/exports/${wrappedId}`)).json(); if (wrappedJob.status !== 'rendering') break; await new Promise(resolve => setTimeout(resolve, 250)); }
+  assert.equal(wrappedJob.status, 'complete', JSON.stringify(wrappedJob));
+  const wrappedOutput = path.join(fixtures, 'verified-wrapped-text.mp4'); fs.writeFileSync(wrappedOutput, Buffer.from(await (await fetch(`${base}/api/exports/${wrappedId}/download`)).arrayBuffer()));
+  const frame = execFileSync(ffmpeg, ['-v', 'error', '-ss', '0.5', '-i', wrappedOutput, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { windowsHide: true, maxBuffer: 5 * 1024 * 1024 });
+  let minX = 1280, maxX = -1, minY = 720, maxY = -1;
+  for (let y = 0; y < 720; y++) for (let x = 0; x < 1280; x++) {
+    const index = (y * 1280 + x) * 3;
+    if (frame[index] > 210 && frame[index + 1] > 210 && frame[index + 2] > 210) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); }
+  }
+  assert.ok(maxX - minX < 1080 && maxY - minY > 140, 'Long text wraps into a compact multi-line title in the downloaded MP4');
 });
 test('renders trims, speed, colors, text, joined clips and silence into a playable MP4', { timeout: 90000 }, async () => {
   const response = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips: [{ mediaId: imported[0].id, start: 0.5, end: 2.5, speed: 2, brightness: 0.05, contrast: 1.1, saturation: 1.2, volume: 0.5 }, { mediaId: imported[1].id, start: 0, end: 1, speed: 0.5 }], settings: { aspect: '16:9', resolution: '720', fps: '30', quality: '18', text: "Frame: 100% yours, 'hello'" } }) });
