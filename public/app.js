@@ -499,6 +499,12 @@ async function poll() {
 }
 $('export-form').onsubmit = async e => {
   e.preventDefault(); if (jobId && !$('cancel-export').hidden) return;
+  if ((project.textClips || []).some(clip => clip.text)) {
+    const message = (project.textClips || []).some(clip => clip.text && clip.at >= total())
+      ? 'A text clip starts after the video ends. Move it onto the video timeline before exporting.'
+      : await api('/api/capabilities').then(features => features.timedTextExport ? '' : 'Restart Frame Studio before exporting text. The running server is out of date.').catch(() => 'Restart Frame Studio before exporting text. The running server is out of date.');
+    if (message) { $('export-status').hidden = false; $('export-message').textContent = message; toast(message); return; }
+  }
   for (const key of ['resolution', 'fps', 'quality']) project.settings[key] = $(key).value;
   save(); exportBusy(true); $('download-export').hidden = true; $('download-credits').hidden = true; $('export-status').hidden = false; $('export-message').textContent = 'Preparing your video'; $('export-progress').value = 0; $('export-percent').textContent = '0%';
   try { const result = await api('/api/exports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(project) }); jobId = result.id; clearTimeout(pollTimer); poll(); }

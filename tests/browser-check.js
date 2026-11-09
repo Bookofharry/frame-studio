@@ -4,6 +4,8 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
+const ffmpeg = require('ffmpeg-static');
 async function main() {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'frame-browser-'));
   const server = spawn(process.execPath, ['server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: '4318', FRAME_DATA_DIR: temporary }, windowsHide: true });
@@ -261,10 +263,21 @@ async function main() {
     assert.ok((await page.locator('#crop-summary').textContent()).includes('360 × 360'), 'Crop survives project save, open and reload');
     await page.locator('#open-export').click();
     assert.ok((await page.locator('#export-description').textContent()).includes('3 clips'));
+    await page.route('**/api/capabilities', route => route.fulfill({ status: 404, body: 'Old server' }));
+    await page.locator('#start-export').click();
+    await page.waitForFunction(() => /Restart Frame Studio/.test(document.getElementById('export-message').textContent));
+    assert.match(await page.locator('#export-message').textContent(), /Restart Frame Studio/, 'Old servers cannot silently drop text during export');
+    await page.unroute('**/api/capabilities');
     await page.locator('#resolution').selectOption('720'); await page.locator('#start-export').click();
     await page.waitForFunction(() => !document.getElementById('download-export').hidden || /failed|error/i.test(document.getElementById('export-message').textContent), { timeout: 90000 });
     assert.equal(await page.locator('#download-export').isVisible(), true, serverErrors.join('').slice(-6000));
     const downloaded = page.waitForEvent('download'); await page.locator('#download-export').click(); await (await downloaded).saveAs('test-results/browser-export.mp4');
+    const brightPixels = at => {
+      const frame = execFileSync(ffmpeg, ['-v', 'error', '-ss', String(at), '-i', 'test-results/browser-export.mp4', '-frames:v', '1', '-vf', 'crop=600:180:50:130', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { windowsHide: true });
+      let count = 0; for (let i = 0; i < frame.length; i += 3) if (frame[i] > 220 && frame[i + 1] > 220 && frame[i + 2] > 220) count++;
+      return count;
+    };
+    assert.ok(brightPixels(1.4) > brightPixels(0.6) + 100, 'Downloaded MP4 contains the text visible in the editor');
     await page.locator('#close-export').click();
     await page.setViewportSize({ width: 390, height: 844 }); await page.screenshot({ path: 'test-results/editor-mobile.png', fullPage: true });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'No mobile horizontal overflow');

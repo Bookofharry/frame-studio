@@ -27,6 +27,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/media', express.static(path.join(root, 'media')));
+app.get('/api/capabilities', (req, res) => res.json({ timedTextExport: true }));
 app.get('/vendor/hls.min.js', (req, res) => res.sendFile(path.join(__dirname, 'node_modules/hls.js/dist/hls.min.js')));
 const upload = multer({ dest: path.join(root, 'media'), limits: { fileSize: 8 * 1024 ** 3, files: 20 } });
 
