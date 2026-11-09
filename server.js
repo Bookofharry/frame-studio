@@ -80,6 +80,25 @@ async function makeThumbnail(source, destination, duration) {
   throw error;
 }
 app.get('/api/library', (req, res) => res.json(library));
+const blackMediaId = 'frame-black-screen-v1';
+let blackGeneration;
+async function blackScreenMedia() {
+  const file = path.join(root, 'media', blackMediaId), thumbnail = `${file}.jpg`;
+  const existing = library.find(media => media.id === blackMediaId);
+  if (existing && fs.existsSync(file) && fs.existsSync(thumbnail)) return existing;
+  if (!blackGeneration) blackGeneration = (async () => {
+    try {
+      await command(ffmpeg, ['-y', '-f', 'lavfi', '-i', 'color=c=black:s=1280x720:r=24:d=60', '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-f', 'mp4', file]);
+      await command(ffmpeg, ['-y', '-f', 'lavfi', '-i', 'color=c=black:s=480x270', '-frames:v', '1', thumbnail]);
+      const media = { id: blackMediaId, name: 'Black screen', generated: 'black', duration: 60, width: 1280, height: 720, fps: 24, audio: false, size: fs.statSync(file).size, url: `/media/${blackMediaId}`, thumbnail: `/media/${blackMediaId}.jpg` };
+      if (existing) Object.assign(existing, media); else library.push(media);
+      fs.writeFileSync(manifest, JSON.stringify(library, null, 2));
+      return existing || media;
+    } catch (error) { fs.rmSync(file, { force: true }); fs.rmSync(thumbnail, { force: true }); throw error; }
+  })();
+  try { return await blackGeneration; } finally { blackGeneration = null; }
+}
+app.post('/api/media/black', async (req, res) => { try { res.json(await blackScreenMedia()); } catch (error) { console.error(`Black screen generation failed: ${error.message}`); res.status(500).json({ error: 'Could not create a black screen. Check that FFmpeg is available and try again.' }); } });
 const catalogRoute = fn => async (req, res) => { try { await fn(req, res); } catch (error) { res.status(error.status || 502).json({ error: error.status ? error.message : 'Could not load this sound library. Please try again.' }); } };
 app.get('/api/audio/providers', (req, res) => res.json(catalog.status()));
 app.post('/api/audio/providers/epidemic', catalogRoute(async (req, res) => res.json(await catalog.connect(req.body))));
@@ -215,8 +234,9 @@ async function render(job, project) {
   const work = path.join(root, 'temp', job.id);
   fs.mkdirSync(work, { recursive: true });
   const { clips, music, settings } = project;
-  const [w, h] = dimensions(clips[0].crop, settings);
-  const fps = settings.fps === 'source' ? Math.min(60, Math.max(1, clips[0].media.fps)) : Number(settings.fps);
+  const canvasClip = clips.find(clip => clip.media.generated !== 'black') || clips[0];
+  const [w, h] = dimensions(canvasClip.crop, settings);
+  const fps = settings.fps === 'source' ? Math.min(60, Math.max(1, canvasClip.media.fps)) : Number(settings.fps);
   job.width = w; job.height = h;
   if (settings.text) fs.writeFileSync(path.join(work, 'title.txt'), settings.text);
   const font = process.platform === 'win32' ? 'C:/Windows/Fonts/arial.ttf' : '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';

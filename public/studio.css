@@ -37,6 +37,10 @@ dialog{width:min(500px,calc(100% - 24px));background:#20252b;color:var(--text);b
 .project-row-details strong{font-size:12px}.project-row-details small{margin-top:5px;color:#91a7b5;font-size:9px}
 .project-row button{flex-shrink:0}.projects-actions{flex-wrap:wrap}
 #new-project-name{display:block;width:100%;margin-top:7px;padding:9px}
+#black-duration{display:block;width:100%;margin-top:7px;padding:9px}
+.timeline-clip.black-screen{background:#080808;border-color:#657079}
+.timeline-clip.black-screen .clip-body{background-color:#090909;background-blend-mode:normal}
+@media(max-width:560px){.timeline-subheading{height:auto;min-height:34px;flex-wrap:wrap;gap:4px}.timeline-add{gap:6px;flex-wrap:wrap;justify-content:flex-end}.timeline-add .text-button{font-size:8px}}
 .join-row-actions{display:flex;gap:4px}
 .join-row-actions .mini{min-width:28px;padding:6px}
 .join-row-actions .join-insert[aria-pressed="true"]{background:var(--accent);color:#0c322c}

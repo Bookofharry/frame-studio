@@ -32,6 +32,30 @@ test('rejects invalid trims and non-video files', async () => {
   const response = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips: [{ mediaId: imported[0].id, start: 2, end: 1 }] }) }); assert.equal(response.status, 400);
   const form = new FormData(); form.append('videos', new Blob(['not video']), 'invalid….mp4'); const result = await (await fetch(`${base}/api/import`, { method: 'POST', body: form })).json(); assert.equal(result.errors.length, 1); assert.equal(result.imported.length, 0); assert.match(result.errors[0], /^invalid…\.mp4: the MP4 is incomplete or damaged/);
 });
+test('creates a reusable black screen and exports black frames for its chosen duration', { timeout: 90000 }, async () => {
+  const generated = await fetch(`${base}/api/media/black`, { method: 'POST' });
+  assert.equal(generated.status, 200); const black = await generated.json();
+  assert.equal(black.generated, 'black'); assert.equal(black.duration, 60); assert.equal(black.audio, false);
+  const again = await (await fetch(`${base}/api/media/black`, { method: 'POST' })).json(); assert.equal(again.id, black.id);
+  const sourceInfo = await probe(path.join(temporary, 'media', black.id));
+  assert.equal(sourceInfo.streams.find(stream => stream.codec_type === 'video').pix_fmt, 'yuv420p');
+  const clips = [{ mediaId: imported[0].id, end: 1 }, { mediaId: black.id, end: 1.5 }, { mediaId: imported[1].id, end: 1 }];
+  const response = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips, settings: { transitionDuration: 0 } }) });
+  assert.equal(response.status, 200); const { id } = await response.json(); let job;
+  for (let i = 0; i < 120; i++) { job = await (await fetch(`${base}/api/exports/${id}`)).json(); if (job.status !== 'rendering') break; await new Promise(resolve => setTimeout(resolve, 250)); }
+  assert.equal(job.status, 'complete', JSON.stringify(job));
+  const output = path.join(fixtures, 'verified-black-screen.mp4'); fs.writeFileSync(output, Buffer.from(await (await fetch(`${base}/api/exports/${id}/download`)).arrayBuffer()));
+  const info = await probe(output); assert.ok(Math.abs(Number(info.format.duration) - 3.5) < 0.12); assert.equal(info.streams.find(stream => stream.codec_type === 'video').pix_fmt, 'yuv420p');
+  const pixel = execFileSync(ffmpeg, ['-v', 'error', '-ss', '1.7', '-i', output, '-frames:v', '1', '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { windowsHide: true });
+  assert.ok([...pixel].every(channel => channel < 10), 'The inserted clip renders solid black');
+  const intro = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips: [{ mediaId: black.id, end: 1 }, { mediaId: imported[1].id, end: 1 }], settings: { aspect: 'source', resolution: 'source', transitionDuration: 0 } }) });
+  assert.equal(intro.status, 200); const introId = (await intro.json()).id; let introJob;
+  for (let i = 0; i < 120; i++) { introJob = await (await fetch(`${base}/api/exports/${introId}`)).json(); if (introJob.status !== 'rendering') break; await new Promise(resolve => setTimeout(resolve, 250)); }
+  assert.equal(introJob.status, 'complete', JSON.stringify(introJob));
+  const introPath = path.join(fixtures, 'verified-black-intro.mp4'); fs.writeFileSync(introPath, Buffer.from(await (await fetch(`${base}/api/exports/${introId}/download`)).arrayBuffer()));
+  const introVideo = (await probe(introPath)).streams.find(stream => stream.codec_type === 'video');
+  assert.equal(introVideo.width, 360); assert.equal(introVideo.height, 640, 'A black intro follows the first real video’s portrait canvas');
+});
 test('renders trims, speed, colors, text, joined clips and silence into a playable MP4', { timeout: 90000 }, async () => {
   const response = await fetch(`${base}/api/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clips: [{ mediaId: imported[0].id, start: 0.5, end: 2.5, speed: 2, brightness: 0.05, contrast: 1.1, saturation: 1.2, volume: 0.5 }, { mediaId: imported[1].id, start: 0, end: 1, speed: 0.5 }], settings: { aspect: '16:9', resolution: '720', fps: '30', quality: '18', text: "Frame: 100% yours, 'hello'" } }) });
   assert.equal(response.status, 200); const { id } = await response.json(); let job;

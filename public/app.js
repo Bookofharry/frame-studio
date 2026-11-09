@@ -69,10 +69,10 @@ function renderLibrary() {
     const info = document.createElement('div'); info.className = 'media-info';
     const details = document.createElement('div');
     const name = document.createElement('strong'); name.textContent = media.name; name.title = media.name;
-    const meta = document.createElement('small'); meta.textContent = `${media.width} × ${media.height} · ${Math.round(media.fps)} fps · Original ${time(media.duration)}`;
+    const meta = document.createElement('small'); meta.textContent = media.generated === 'black' ? 'Solid black · Up to 60 seconds' : `${media.width} × ${media.height} · ${Math.round(media.fps)} fps · Original ${time(media.duration)}`;
     details.append(name, meta);
     const edits = document.createElement('div'); edits.className = 'library-edits';
-    const add = document.createElement('button'); add.className = 'add-clip'; add.textContent = '+ Add at playhead'; add.setAttribute('aria-label', `Add ${media.name} to timeline at playhead`); add.onclick = () => { const at = Number($('scrubber').value); if (addClip(media, at)) toast(`Video inserted at ${time(at)}.`); };
+    const add = document.createElement('button'); add.className = 'add-clip'; add.textContent = media.generated === 'black' ? '+ Add black screen' : '+ Add at playhead'; add.setAttribute('aria-label', `Add ${media.name} to timeline at playhead`); add.onclick = () => { if (media.generated === 'black') return openBlackDialog(); const at = Number($('scrubber').value); if (addClip(media, at)) toast(`Video inserted at ${time(at)}.`); };
     info.append(details); card.append(thumbnail, info, edits, add); $('library').append(card);
   }
   syncLibraryState();
@@ -131,7 +131,7 @@ function syncLibraryState() {
 function addClip(media, at = Number($('scrubber').value)) {
   return addClips([media], at);
 }
-function freshClip(media) { return { id: crypto.randomUUID(), mediaId: media.id, start: 0, end: media.duration, speed: 1, volume: 1, brightness: 0, contrast: 1, saturation: 1 }; }
+function freshClip(media) { return { id: crypto.randomUUID(), mediaId: media.id, start: 0, end: media.insertDuration ?? (media.generated === 'black' ? 2 : media.duration), speed: 1, volume: 1, brightness: 0, contrast: 1, saturation: 1 }; }
 function insertionPlan(position, firstMedia) {
   const clips = project.clips, at = Math.max(0, Math.min(total(), Number(position) || 0));
   if (!clips.length) return { index: 0, at };
@@ -148,7 +148,7 @@ function insertionPlan(position, firstMedia) {
       const before = (sourceAt - clip.start) / clip.speed;
       const remaining = (clip.end - sourceAt - 0.08) / clip.speed;
       const requested = Number(project.settings.transitionDuration ?? 0.35);
-      const candidate = Math.min(requested, before / 2, remaining, firstMedia.duration / 3);
+      const candidate = Math.min(requested, before / 2, remaining, (firstMedia.insertDuration ?? (firstMedia.generated === 'black' ? 2 : firstMedia.duration)) / 3);
       const fade = candidate >= 0.05 ? candidate : 0;
       return { index: index + 1, at, split: { sourceAt: sourceAt + fade * clip.speed, fade } };
     }
@@ -177,7 +177,7 @@ function renderTimeline() {
   const container = $('timeline-clips'); container.replaceChildren();
   if (!project.clips.length) { const empty = document.createElement('div'); empty.className = 'timeline-empty'; empty.textContent = 'Drop videos here to start editing'; container.append(empty); }
   project.clips.forEach((clip, index) => {
-    const media = mediaFor(clip); const button = document.createElement('div'); button.className = `timeline-clip${index === selected ? ' selected' : ''}`; button.setAttribute('role', 'button'); button.tabIndex = 0; button.dataset.clipId = clip.id;
+    const media = mediaFor(clip); const button = document.createElement('div'); button.className = `timeline-clip${index === selected ? ' selected' : ''}${media?.generated === 'black' ? ' black-screen' : ''}`; button.setAttribute('role', 'button'); button.tabIndex = 0; button.dataset.clipId = clip.id;
     button.style.width = `${Math.max(1, length(clip) * pixelsPerSecond)}px`;
     if (index) button.style.marginLeft = `${-transitionLength(index - 1) * pixelsPerSecond}px`;
     const body = document.createElement('div'); body.className = 'clip-body';
@@ -270,7 +270,7 @@ function applyPreview() {
   const clip = current(), media = mediaFor(clip); if (!clip || !media) return;
   video.style.filter = `brightness(${1 + clip.brightness}) contrast(${clip.contrast}) saturate(${clip.saturation})`;
   video.volume = clip.volume; video.playbackRate = clip.speed;
-  const first = cropFor(project.clips[0]);
+  const first = cropFor(project.clips.find(item => mediaFor(item)?.generated !== 'black') || project.clips[0]);
   const ratio = project.settings.aspect === 'source' ? first.width / first.height : (() => { const [w, h] = project.settings.aspect.split(':').map(Number); return w / h; })();
   const stage = $('preview-stage'); let width = stage.clientWidth, height = width / ratio;
   if (height > stage.clientHeight) { height = stage.clientHeight; width = height * ratio; }
@@ -367,6 +367,26 @@ $('file-input').onchange = e => importFiles([...e.target.files]);
 for (const event of ['dragenter', 'dragover']) $('import-zone').addEventListener(event, e => { e.preventDefault(); $('import-zone').classList.add('dragover'); });
 for (const event of ['dragleave', 'drop']) $('import-zone').addEventListener(event, e => { e.preventDefault(); $('import-zone').classList.remove('dragover'); });
 $('import-zone').addEventListener('drop', e => importFiles([...e.dataTransfer.files]));
+let blackInsertAt = 0, blackBusy = false;
+function openBlackDialog() { blackInsertAt = Number($('scrubber').value); stop(); $('black-duration').value = '2'; $('black-dialog').showModal(); $('black-duration').focus(); }
+$('timeline-black').onclick = openBlackDialog;
+for (const id of ['close-black', 'cancel-black']) $(id).onclick = () => $('black-dialog').close();
+$('black-duration').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); $('add-black').click(); } };
+$('add-black').onclick = async () => {
+  const duration = Number($('black-duration').value);
+  if (!Number.isFinite(duration) || duration < 0.1 || duration > 60) return toast('Choose a black screen duration between 0.1 and 60 seconds.');
+  if (blackBusy) return;
+  blackBusy = true; $('add-black').disabled = true;
+  try {
+    const media = await api('/api/media/black', { method: 'POST' });
+    if (!$('black-dialog').open) return;
+    if (!allMedia.some(item => item.id === media.id)) allMedia.push(media);
+    project.mediaIds = [...new Set([...project.mediaIds, media.id])]; refreshProjectLibrary();
+    $('black-dialog').close();
+    if (addClips([{ ...media, insertDuration: duration }], blackInsertAt)) toast(`Black screen inserted at ${time(blackInsertAt)} for ${time(duration)}.`);
+  } catch (error) { toast(error.message); }
+  finally { blackBusy = false; $('add-black').disabled = false; }
+};
 function trim(key, value) {
   const clip = current(); if (!clip) return;
   const n = Number(value), media = mediaFor(clip);
