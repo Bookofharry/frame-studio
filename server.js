@@ -212,7 +212,7 @@ function validateProject(body) {
   if (body.textClips !== undefined && (!Array.isArray(body.textClips) || body.textClips.length > 20)) throw new Error('Use up to 20 text clips.');
   const textClips = (body.textClips || []).map(clip => {
     if (typeof clip.text !== 'string' || clip.text.length > 120) throw new Error('Each text clip must contain up to 120 characters.');
-    return { text: clip.text, at: number(clip.at, 0, 0, 86400), duration: number(clip.duration, 3, 0.1, 3600) };
+    return { text: clip.text, at: number(clip.at, 0, 0, 86400), duration: number(clip.duration, 3, 0.1, 3600), x: number(clip.x, 0.5, 0, 1), y: number(clip.y, 0.88, 0, 1), size: number(clip.size, 0.045, 0.02, 0.15) };
   });
   catalog.assertLicensed(music.map(clip => clip.media));
   return { clips, music, textClips, settings: { resolution, aspect, quality, fps, text, transitionDuration } };
@@ -246,8 +246,6 @@ async function render(job, project) {
   const font = process.platform === 'win32' ? 'C:/Windows/Fonts/arial.ttf' : '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
   const total = clips.reduce((sum, c, index) => sum + (c.end - c.start) / c.speed - overlap(clips, index, settings.transitionDuration), 0);
   const timedText = [...textClips, ...(settings.text ? [{ text: settings.text, at: 0, duration: total }] : [])].filter(clip => clip.text && clip.at < total);
-  const textLanes = [], textLayout = new Map();
-  timedText.map((clip, index) => ({ clip, index })).sort((a, b) => a.clip.at - b.clip.at || a.index - b.index).forEach(({ clip }) => { let lane = textLanes.findIndex(end => end <= clip.at); if (lane === -1) lane = textLanes.length; textLanes[lane] = clip.at + clip.duration; textLayout.set(clip, lane); });
   let completed = 0;
   const run = (args, duration, progressWeight = 1) => new Promise((resolve, reject) => {
     if (job.status === 'cancelled') return reject(new Error('Export cancelled'));
@@ -319,8 +317,8 @@ async function render(job, project) {
         fs.writeFileSync(path.join(work, `text-${index}.txt`), clip.text);
         const input = index ? `t${index - 1}` : '0:v';
         const end = Math.min(total, clip.at + clip.duration);
-        const bottom = (0.08 + (textLayout.get(clip) || 0) * 0.1).toFixed(2);
-        filters.push(`[${input}]drawtext=fontfile=font.ttf:textfile=text-${index}.txt:expansion=none:fontcolor=white:fontsize=${Math.round(h * 0.045)}:box=1:boxcolor=black@0.5:boxborderw=12:x=(w-text_w)/2:y=h-text_h-h*${bottom}:enable='between(t,${clip.at},${end})'[t${index}]`);
+        const x = clip.x ?? 0.5, y = clip.y ?? 0.88, size = clip.size ?? 0.045;
+        filters.push(`[${input}]drawtext=fontfile=font.ttf:textfile=text-${index}.txt:expansion=none:fontcolor=white:fontsize=${Math.round(h * size)}:box=1:boxcolor=black@0.5:boxborderw=12:x=w*${x}-text_w/2:y=h*${y}-text_h/2:enable='between(t,${clip.at},${end})'[t${index}]`);
       });
       videoWithText = audible.length ? 'titled.mp4' : output;
       await run(['-i', joined, '-filter_complex', filters.join(';'), '-map', `[t${timedText.length - 1}]`, '-map', '0:a:0', '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'copy', '-movflags', '+faststart', videoWithText], total, 0);

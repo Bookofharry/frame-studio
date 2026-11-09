@@ -197,6 +197,17 @@ async function main() {
     await page.locator('#undo').click();
     await page.evaluate(() => seekTimeline(1.2));
     await page.waitForFunction(() => document.querySelector('#title-preview .preview-text')?.textContent === 'Made with Frame');
+    await page.locator('.text-clip').click();
+    let previewText = await page.locator('.preview-text').boundingBox();
+    await drag({ x: previewText.x + previewText.width / 2, y: previewText.y + previewText.height / 2 }, { x: previewText.x + previewText.width / 2 + 40, y: previewText.y + previewText.height / 2 - 30 });
+    assert.ok(await page.evaluate(() => project.textClips[0].x > 0.5 && project.textClips[0].y < 0.88), 'Dragging text on the preview changes its saved position');
+    let resize = await page.locator('.preview-text-resize').boundingBox();
+    await drag({ x: resize.x + 8, y: resize.y + 8 }, { x: resize.x + 38, y: resize.y + 28 });
+    assert.ok(await page.evaluate(() => project.textClips[0].size > 0.045), 'Dragging the preview corner changes text size');
+    await page.locator('#text-x').fill('25'); await page.locator('#text-x').press('Tab');
+    await page.locator('#text-y').fill('30'); await page.locator('#text-y').press('Tab');
+    await page.locator('#text-size').fill('8'); await page.locator('#text-size').press('Tab');
+    assert.ok(await page.evaluate(() => project.textClips[0].x === 0.25 && project.textClips[0].y === 0.3 && project.textClips[0].size === 0.08), 'Precise position and size controls update the text clip');
     await page.evaluate(() => seekTimeline(2.2));
     await page.waitForFunction(() => !document.querySelector('#title-preview .preview-text'));
     await page.locator('#save-project').click();
@@ -243,6 +254,7 @@ async function main() {
     await page.screenshot({ path: 'test-results/editor-desktop.png', fullPage: true });
     await page.reload(); await page.waitForFunction(() => document.querySelectorAll('.timeline-clip').length === 3);
     assert.equal(await page.locator('.text-clip').count(), 1, 'Text timing survives project save, open, and reload');
+    assert.ok(await page.evaluate(() => project.textClips[0].x === 0.25 && project.textClips[0].y === 0.3 && project.textClips[0].size === 0.08), 'Text position and size survive project save, open, and reload');
     assert.equal(await editedCard.locator('.library-clip').count(), 2, 'Project open and reload restore library edits');
     assert.equal(await editedCard.locator('.duration-badge').textContent(), '00:00.8');
     assert.equal(await editedCard.locator('.library-clip-range').first().textContent(), 'In 00:00.25 → Out 00:01.45');

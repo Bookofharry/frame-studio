@@ -286,6 +286,8 @@ function applyPreview() {
   positionPlayer(video, $('crop-viewport'), clip);
   if (project.clips[selected + 1] && mediaFor(project.clips[selected + 1])) positionPlayer(preloadVideo, $('next-viewport'), project.clips[selected + 1]);
   $('title-preview').style.fontSize = `${height * 0.045}px`;
+  $('title-preview').dataset.signature = '';
+  syncText(Number($('scrubber').value));
   $('player-format').textContent = project.settings.aspect === 'source' ? 'Original' : project.settings.aspect;
 }
 function updateTime() {
