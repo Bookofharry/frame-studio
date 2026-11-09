@@ -288,6 +288,56 @@ async function main() {
     };
     assert.ok(brightPixels(1.4) > brightPixels(0.6) + 100, 'Downloaded MP4 contains the text visible in the editor');
     await page.locator('#close-export').click();
+    assert.equal(await page.evaluate(async () => {
+      await storedExportDirectory({ kind: 'directory', name: 'Remembered folder' });
+      const remembered = await storedExportDirectory();
+      await storedExportDirectory(null);
+      return remembered?.name;
+    }), 'Remembered folder', 'Default folder preference survives an IndexedDB round trip');
+    await page.evaluate(() => {
+      window.__makeTestDirectory = (name, files) => ({
+        kind: 'directory', name,
+        queryPermission: async () => 'granted', requestPermission: async () => 'granted',
+        getFileHandle: async (name, options) => {
+          if (!options?.create) { if (files.has(name)) return { name }; throw new DOMException('Missing', 'NotFoundError'); }
+          return { createWritable: async () => {
+            let bytes = 0;
+            return { write: async chunk => { bytes += chunk.byteLength; }, close: async () => { files.set(name, bytes); }, abort: async () => {} };
+          } };
+        }
+      });
+      const files = new Map(); window.__folderFiles = files;
+      const directory = window.__makeTestDirectory('Studio Exports', files);
+      window.showDirectoryPicker = async () => directory;
+      refreshExportFolderUI();
+    });
+    await page.locator('#export-folder-settings').click();
+    await page.locator('#pick-default-folder').click();
+    await page.waitForFunction(() => document.getElementById('default-folder-label').textContent.includes('Studio Exports'));
+    await page.locator('#done-export-folder').click();
+    await page.locator('#open-export').click();
+    await page.locator('#download-export').click();
+    assert.equal(await page.locator('#export-destination').inputValue(), 'default', 'Saved folder becomes the default destination');
+    await page.locator('#export-filename').fill('Folder film');
+    await page.locator('#confirm-filename').click();
+    await page.waitForFunction(() => document.getElementById('export-message').textContent.includes('Saved Folder film.mp4'));
+    assert.ok(await page.evaluate(() => window.__folderFiles.get('Folder film.mp4') > 1000), 'MP4 streams into the selected folder');
+    await page.locator('#download-export').click();
+    await page.locator('#export-filename').fill('Folder film');
+    await page.locator('#confirm-filename').click();
+    await page.waitForFunction(() => document.getElementById('export-message').textContent.includes('Saved Folder film (2).mp4'));
+    assert.ok(await page.evaluate(() => window.__folderFiles.get('Folder film (2).mp4') > 1000), 'Saving again chooses a unique filename');
+    await page.evaluate(() => {
+      window.__oneOffFiles = new Map();
+      window.showDirectoryPicker = async () => window.__makeTestDirectory('One-time Folder', window.__oneOffFiles);
+    });
+    await page.locator('#download-export').click();
+    await page.locator('#export-destination').selectOption('choose');
+    await page.locator('#export-filename').fill('Special cut');
+    await page.locator('#confirm-filename').click();
+    await page.waitForFunction(() => document.getElementById('export-message').textContent.includes('Saved Special cut.mp4 in One-time Folder'));
+    assert.ok(await page.evaluate(() => window.__oneOffFiles.get('Special cut.mp4') > 1000 && defaultExportDirectory.name === 'Studio Exports'), 'One-time folder does not change the default');
+    await page.locator('#close-export').click();
     await page.setViewportSize({ width: 390, height: 844 }); await page.screenshot({ path: 'test-results/editor-mobile.png', fullPage: true });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'No mobile horizontal overflow');
     await page.locator('#load-project').click();

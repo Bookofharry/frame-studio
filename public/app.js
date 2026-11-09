@@ -488,23 +488,6 @@ $('new-project').onclick = () => { $('new-project-name').value = `Untitled proje
 $('confirm-new').onclick = () => { if (importing) return toast('Wait for the import to finish before starting a new project.'); remember(); save(); project = defaults(); project.name = $('new-project-name').value.trim() || 'Untitled project'; selected = -1; $('media-search').value = ''; video.dataset.mediaId = ''; restore(); $('new-dialog').close(); };
 $('open-export').onclick = () => { if (!project.clips.length) return toast('Add a video to your timeline first.'); stop(); $('export-credit-note').hidden = !project.music.some(c => musicSource(c)?.catalog?.attributionRequired && c.volume > 0 && c.at < total()); $('export-description').textContent = `${project.clips.length} clip${project.clips.length === 1 ? '' : 's'} · ${time(total())} total. All timeline clips will be joined in order into one MP4 video.`; $('export-dialog').showModal(); };
 $('close-export').onclick = () => $('export-dialog').close();
-$('download-export').onclick = event => {
-  event.preventDefault();
-  if (!jobId || $('download-export').hidden) return;
-  $('export-filename').value = project.name.trim() || 'My video';
-  $('filename-dialog').showModal();
-  $('export-filename').focus(); $('export-filename').select();
-};
-$('close-filename').onclick = $('cancel-filename').onclick = () => $('filename-dialog').close();
-$('filename-form').onsubmit = event => {
-  event.preventDefault();
-  const name = $('export-filename').value.trim();
-  if (!name) { $('export-filename').focus(); return; }
-  const link = document.createElement('a');
-  link.href = `/api/exports/${jobId}/download?name=${encodeURIComponent(name)}`;
-  document.body.append(link); link.click(); link.remove();
-  $('filename-dialog').close();
-};
 function exportBusy(busy) { for (const key of ['resolution', 'fps', 'quality']) $(key).disabled = busy; $('start-export').hidden = busy; $('cancel-export').hidden = !busy; }
 async function poll() {
   try {
@@ -794,5 +777,6 @@ $('timeline-scroll').addEventListener('drop', event => {
 new ResizeObserver(() => { applyPreview(); if (!timelineGesture) renderTimeline(); }).observe($('preview-stage'));
 setupMusic();
 setupText();
+setupExportFolders();
 setupCatalog();
 init();

@@ -8,6 +8,7 @@ const ffmpeg = require('ffmpeg-static');
 const ffprobe = require('ffprobe-static').path;
 const cropGeometry = require('./public/crop');
 const textLayout = require('./public/text-layout');
+const exportName = require('./public/export-name');
 const { createCatalog } = require('./audio-catalog');
 
 const root = process.env.FRAME_DATA_DIR || path.join(__dirname, 'data');
@@ -383,10 +384,7 @@ app.get('/api/exports/:id/download', (req, res) => {
   if (jobs.has(id) && jobs.get(id).status !== 'complete') return res.sendStatus(404);
   const file = path.join(root, 'exports', `${id}.mp4`);
   if (!fs.existsSync(file)) return res.sendStatus(404);
-  const requested = typeof req.query.name === 'string' ? req.query.name : '';
-  const base = requested.replace(/\.mp4$/i, '').replace(/[<>:"/\\|?*\x00-\x1f\x7f]/g, '').trim().replace(/[. ]+$/g, '').slice(0, 120);
-  const name = base && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(base) ? base : 'Frame-export';
-  res.download(file, `${name}.mp4`);
+  res.download(file, exportName.filename(req.query.name));
 });
 app.get('/api/exports/:id/credits', (req, res) => {
   if (jobs.get(req.params.id)?.status !== 'complete' || !jobs.get(req.params.id)?.credits) return res.sendStatus(404);
