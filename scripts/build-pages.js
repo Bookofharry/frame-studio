@@ -33,8 +33,8 @@ execFileSync(ffmpeg, [
 
 execFileSync(ffmpeg, [
   '-hide_banner', '-loglevel', 'error', '-y',
-  '-f', 'lavfi', '-i', 'color=c=black:s=480x270',
-  '-frames:v', '1', '-q:v', '4',
+  '-f', 'lavfi', '-i', 'color=c=black:s=480x270:r=1:d=1',
+  '-frames:v', '1', '-update', '1', '-q:v', '4',
   blackJpg
 ], { stdio: 'inherit' });
 

@@ -107,8 +107,8 @@ async function blackScreenMedia() {
   if (existing && fs.existsSync(file) && fs.existsSync(thumbnail)) return existing;
   if (!blackGeneration) blackGeneration = (async () => {
     try {
-      await command(ffmpeg, ['-y', '-f', 'lavfi', '-i', 'color=c=black:s=1280x720:r=24:d=60', '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-f', 'mp4', file]);
-      await command(ffmpeg, ['-y', '-f', 'lavfi', '-i', 'color=c=black:s=480x270', '-frames:v', '1', thumbnail]);
+      await command(ffmpeg, ['-nostdin', '-y', '-f', 'lavfi', '-i', 'color=c=black:s=1280x720:r=24:d=60', '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-f', 'mp4', file]);
+      await command(ffmpeg, ['-nostdin', '-y', '-f', 'lavfi', '-i', 'color=c=black:s=480x270:r=1:d=1', '-frames:v', '1', '-update', '1', thumbnail]);
       const media = { id: blackMediaId, name: 'Black screen', generated: 'black', duration: 60, width: 1280, height: 720, fps: 24, audio: false, size: fs.statSync(file).size, url: `/media/${blackMediaId}`, thumbnail: `/media/${blackMediaId}.jpg` };
       if (existing) Object.assign(existing, media); else library.push(media);
       fs.writeFileSync(manifest, JSON.stringify(library, null, 2));
