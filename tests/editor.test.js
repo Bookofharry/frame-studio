@@ -18,7 +18,7 @@ before(async () => {
   execFileSync(ffmpeg, ['-y', '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000:duration=2', '-af', 'adelay=1000:all=1', path.join(fixtures, 'sample-music.wav')], { stdio: 'ignore', windowsHide: true });
   server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.on('listening', resolve)); base = `http://127.0.0.1:${server.address().port}`;
 });
-after(async () => { await new Promise(resolve => server.close(resolve)); fs.rmSync(temporary, { recursive: true, force: true }); });
+after(async () => { server.closeAllConnections?.(); await new Promise(resolve => server.close(resolve)); fs.rmSync(temporary, { recursive: true, force: true }); });
 test('imports real videos with audio and silent portrait media', async () => {
   const names = ['Chimpanzee_father_seeing_newborn…_f48fe44e.mp4', 'sample-silent.mp4'];
   const sources = ['sample-with-audio.mp4', 'sample-silent.mp4'];
@@ -99,6 +99,7 @@ test('renders trims, speed, colors, text, joined clips and silence into a playab
   const info = await probe(output); const video = info.streams.find(s => s.codec_type === 'video'); assert.equal(video.codec_name, 'h264'); assert.equal(video.pix_fmt, 'yuv420p', 'Joined MP4 uses browser-compatible 4:2:0 video'); assert.equal(video.width, 1280); assert.equal(video.height, 720); assert.equal(video.avg_frame_rate, '30/1'); assert.ok(Math.abs(Number(info.format.duration) - (3 - 1 / 3)) < 0.12); assert.ok(info.streams.some(s => s.codec_type === 'audio' && s.codec_name === 'aac'));
   const restoredId = randomUUID(); fs.copyFileSync(path.join(temporary, 'exports', `${id}.mp4`), path.join(temporary, 'exports', `${restoredId}.mp4`));
   const restoredDownload = await fetch(`${base}/api/exports/${restoredId}/download`); assert.equal(restoredDownload.status, 200, 'Completed MP4 remains downloadable without an in-memory export job');
+  await restoredDownload.arrayBuffer();
 });
 test('blocks cross-origin local requests', async () => {
   const response = await fetch(`${base}/api/library`, { headers: { Origin: 'https://example.com' } }); assert.equal(response.status, 403);
@@ -187,6 +188,7 @@ test('imports music with a browser preview and rejects invalid soundtracks', asy
   assert.equal(soundtrack.duration, 3);
   const preview = await fetch(base + soundtrack.url); assert.equal(preview.status, 200);
   assert.match(preview.headers.get('content-type'), /audio|mp4/);
+  await preview.arrayBuffer();
   const invalidMusic = [
     [{ mediaId: 'missing' }], [{ mediaId: imported[0].id }], [{ mediaId: soundtrack.id, start: 2, end: 1 }],
     [{ mediaId: soundtrack.id, volume: 2 }], [{ mediaId: soundtrack.id, at: -1 }],
