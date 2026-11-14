@@ -4,8 +4,24 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const ffmpeg = require('ffmpeg-static');
+const ffmpegStatic = require('ffmpeg-static');
 const ffprobe = require('ffprobe-static').path;
+
+function resolveFfmpeg() {
+  if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
+  const hasDrawtext = bin => {
+    try { return /\bdrawtext\b/.test(execFileSync(bin, ['-hide_banner', '-filters'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); }
+    catch { return false; }
+  };
+  if (ffmpegStatic && hasDrawtext(ffmpegStatic)) return ffmpegStatic;
+  if (hasDrawtext('ffmpeg')) return 'ffmpeg';
+  return ffmpegStatic || 'ffmpeg';
+}
+const ffmpeg = resolveFfmpeg();
+const supportsDrawtextAlign = (() => {
+  try { return /\btext_align\b/.test(execFileSync(ffmpeg, ['-hide_banner', '-h', 'filter=drawtext'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); }
+  catch { return false; }
+})();
 const cropGeometry = require('./public/crop');
 const textLayout = require('./public/text-layout');
 const exportName = require('./public/export-name');
@@ -333,7 +349,8 @@ async function render(job, project) {
       const input = index ? `t${index - 1}` : inputLabel;
       const end = Math.min(total, clip.at + clip.duration);
       const x = clip.x ?? 0.5, y = clip.y ?? 0.88, size = clip.size ?? 0.045;
-      filters.push(`[${input}]drawtext=${fontOption}:textfile=text-${index}.txt:expansion=none:fontcolor=white:fontsize=${Math.round(h * size)}:line_spacing=${Math.round(h * size * textLayout.lineSpacing)}:text_align=C:box=1:boxcolor=black@0.5:boxborderw=${Math.round(h * textLayout.boxPadding)}:x=w*${x}-text_w/2:y=h*${y}-text_h/2:enable='between(t,${clip.at},${end})'[t${index}]`);
+      const alignOpt = supportsDrawtextAlign ? ':text_align=C' : '';
+      filters.push(`[${input}]drawtext=${fontOption}:textfile=text-${index}.txt:expansion=none:fontcolor=white:fontsize=${Math.round(h * size)}:line_spacing=${Math.round(h * size * textLayout.lineSpacing)}${alignOpt}:box=1:boxcolor=black@0.5:boxborderw=${Math.round(h * textLayout.boxPadding)}:x=w*${x}-text_w/2:y=h*${y}-text_h/2:enable='between(t,${clip.at},${end})'[t${index}]`);
     });
     return { filters, outputLabel: `t${timedText.length - 1}` };
   };
@@ -365,17 +382,17 @@ async function render(job, project) {
       if (hasTransitions) {
         job.message = hasText ? 'Joining clips and adding timed text' : 'Finishing your MP4';
         const args = clips.flatMap((_, index) => ['-i', `${index}.${clipExt}`]);
-        const filters = clips.map((_, index) => `[${index}:v]settb=AVTB,setpts=PTS-STARTPTS[base${index}]`);
+        const filters = clips.map((_, index) => `[${index}:v]fps=${fps},settb=AVTB,setpts=PTS-STARTPTS[base${index}]`);
         let elapsed = (clips[0].end - clips[0].start) / clips[0].speed;
         for (let index = 1; index < clips.length; index++) {
           const duration = overlap(clips, index - 1, settings.transitionDuration);
           const offset = Math.max(0, elapsed - duration);
           const v = index === 1 ? 'base0' : `v${index - 1}`, a = index === 1 ? '0:a' : `a${index - 1}`;
           if (duration) {
-            filters.push(`[${v}][base${index}]xfade=transition=fade:duration=${duration}:offset=${offset}[v${index}]`);
+            filters.push(`[${v}][base${index}]xfade=transition=fade:duration=${duration}:offset=${offset},fps=${fps},settb=AVTB[v${index}]`);
             filters.push(`[${a}][${index}:a]acrossfade=d=${duration}:c1=tri:c2=tri[a${index}]`);
           } else {
-            filters.push(`[${v}][base${index}]concat=n=2:v=1:a=0[v${index}]`);
+            filters.push(`[${v}][base${index}]concat=n=2:v=1:a=0,fps=${fps},settb=AVTB[v${index}]`);
             filters.push(`[${a}][${index}:a]concat=n=2:v=0:a=1[a${index}]`);
           }
           elapsed += (clips[index].end - clips[index].start) / clips[index].speed - duration;
