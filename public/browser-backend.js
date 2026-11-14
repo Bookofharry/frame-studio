@@ -797,22 +797,22 @@
         const args = [];
         if (c.media.generated === 'black') {
           args.push('-f', 'lavfi', '-i', `color=c=black:s=${w}x${h}:r=${fps}:d=${duration}`);
-          args.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo');
+          args.push('-f', 'lavfi', '-i', `anullsrc=r=48000:cl=stereo:d=${duration}`);
           const clipTarget = singlePassDirect ? 'out.mp4' : `clip-${i}.mp4`;
           const vCodec = needsVideoPass2 ? ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '14'] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', settings.quality];
           const blackVf = `eq=brightness=${c.brightness}:contrast=${c.contrast}:saturation=${c.saturation},format=yuv420p`;
-          args.push('-map', '0:v:0', '-map', '1:a:0', '-vf', blackVf, '-af', 'aresample=48000,aformat=channel_layouts=stereo,apad', '-t', String(duration), ...vCodec, '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-video_track_timescale', '90000', ...(singlePassDirect ? ['-movflags', '+faststart'] : []), clipTarget);
+          args.push('-map', '0:v:0', '-map', '1:a:0', '-vf', blackVf, '-af', `aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${duration}`, '-t', String(duration), ...vCodec, '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-video_track_timescale', '90000', ...(singlePassDirect ? ['-movflags', '+faststart'] : []), clipTarget);
           await execStage(args, duration, clipTotal > 0 ? step1Budget * (completed / clipTotal) : 0, clipTotal > 0 ? step1Budget * (duration / clipTotal) : step1Budget);
         } else {
           const inputName = await ensureInputFile(c.record, 'src', '.mp4');
           args.push('-ss', String(c.start), '-t', String(c.end - c.start), '-i', inputName);
-          if (!c.media.audio) args.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo');
+          if (!c.media.audio) args.push('-f', 'lavfi', '-i', `anullsrc=r=48000:cl=stereo:d=${duration}`);
           const vf = `setpts=(PTS-STARTPTS)/${c.speed},crop=${c.crop.width}:${c.crop.height}:${c.crop.x}:${c.crop.y}:exact=1,scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,eq=brightness=${c.brightness}:contrast=${c.contrast}:saturation=${c.saturation},fps=${fps},format=yuv420p`;
           let tempo = c.speed;
           const tempoFilters = [];
           while (tempo > 2) { tempoFilters.push('atempo=2'); tempo /= 2; }
           tempoFilters.push(`atempo=${tempo}`);
-          const af = `asetpts=PTS-STARTPTS,${tempoFilters.join(',')},volume=${c.volume},aresample=48000,aformat=channel_layouts=stereo,apad`;
+          const af = `asetpts=PTS-STARTPTS,${tempoFilters.join(',')},volume=${c.volume},aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${duration}`;
           const vCodec = needsVideoPass2 ? ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '14'] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', settings.quality];
           const clipTarget = singlePassDirect ? 'out.mp4' : `clip-${i}.mp4`;
           args.push('-map', '0:v:0', '-map', c.media.audio ? '0:a:0' : '1:a:0', '-vf', vf, '-af', af, '-t', String(duration), ...vCodec, '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-video_track_timescale', '90000', ...(singlePassDirect ? ['-movflags', '+faststart'] : []), clipTarget);
@@ -906,7 +906,7 @@
           job.message = 'Mixing music and original sound';
           job.progress = Math.max(job.progress, 96);
           const args = ['-i', stage2Out];
-          const filters = ['[0:a]aresample=48000,aformat=channel_layouts=stereo,apad[original]'];
+          const filters = [`[0:a]aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${total}[original]`];
           for (let idx = 0; idx < audible.length; idx++) {
             const c = audible[idx];
             const audioFile = await ensureInputFile(c.record, 'aud', '.m4a');

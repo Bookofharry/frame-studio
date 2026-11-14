@@ -51,7 +51,7 @@ const upload = multer({ dest: path.join(root, 'media'), limits: { fileSize: 8 * 
 
 function command(binary, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { windowsHide: true, ...options });
+    const child = spawn(binary, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...options });
     let stdout = '', stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-12000); });
@@ -317,7 +317,7 @@ async function render(job, project) {
   const output = path.join(root, 'exports', `${job.id}.mp4`);
   const run = (args, duration, startPct = 0, spanPct = 0) => new Promise((resolve, reject) => {
     if (job.status === 'cancelled') return reject(new Error('Export cancelled'));
-    const child = spawn(ffmpeg, ['-hide_banner', '-y', '-progress', 'pipe:1', '-nostats', ...args], { cwd: work, windowsHide: true });
+    const child = spawn(ffmpeg, ['-nostdin', '-hide_banner', '-y', '-progress', 'pipe:1', '-nostats', ...args], { cwd: work, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     job.process = child;
     let stderr = '', pending = '';
     child.stdout.on('data', chunk => {
@@ -361,13 +361,13 @@ async function render(job, project) {
       const duration = (c.end - c.start) / c.speed;
       job.message = `Rendering clip ${i + 1} of ${clips.length}`;
       const args = ['-ss', String(c.start), '-t', String(c.end - c.start), '-i', path.join(root, 'media', c.media.id)];
-      if (!c.media.audio) args.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo');
+      if (!c.media.audio) args.push('-f', 'lavfi', '-i', `anullsrc=r=48000:cl=stereo:d=${duration}`);
       const vf = `setpts=(PTS-STARTPTS)/${c.speed},crop=${c.crop.width}:${c.crop.height}:${c.crop.x}:${c.crop.y}:exact=1,scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,eq=brightness=${c.brightness}:contrast=${c.contrast}:saturation=${c.saturation},fps=${fps},format=yuv420p`;
       // Keep each tempo stage at or below 2x to avoid FFmpeg's sample-skipping mode.
       let tempo = c.speed; const tempoFilters = [];
       while (tempo > 2) { tempoFilters.push('atempo=2'); tempo /= 2; }
       tempoFilters.push(`atempo=${tempo}`);
-      const af = `asetpts=PTS-STARTPTS,${tempoFilters.join(',')},volume=${c.volume},aresample=48000,aformat=channel_layouts=stereo,apad`;
+      const af = `asetpts=PTS-STARTPTS,${tempoFilters.join(',')},volume=${c.volume},aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${duration}`;
       const videoCodec = needsVideoPass2 ? ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '0'] : ['-c:v', 'libx264', '-preset', 'medium', '-crf', settings.quality];
       const audioCodec = needsAudioPass2 ? ['-c:a', 'pcm_s16le'] : ['-c:a', 'aac', '-b:a', '192k'];
       const clipTarget = singlePassDirect ? output : `${i}.${clipExt}`;
@@ -426,7 +426,7 @@ async function render(job, project) {
       if (hasMusic) {
         job.message = 'Mixing music and original sound'; job.progress = Math.max(job.progress, 96);
         const args = ['-i', stage2Out];
-        const filters = ['[0:a]aresample=48000,aformat=channel_layouts=stereo,apad[original]'];
+        const filters = [`[0:a]aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${total}[original]`];
         audible.forEach((c, index) => {
           args.push('-ss', String(c.start), '-t', String(Math.min(c.end - c.start, total - c.at)), '-i', path.join(root, 'media', c.media.id));
           filters.push(`[${index + 1}:a:0]asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,volume=${c.volume},adelay=${Math.round(c.at * 48000)}S:all=1[m${index}]`);
