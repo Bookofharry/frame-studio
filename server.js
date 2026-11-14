@@ -316,7 +316,11 @@ async function render(job, project) {
   const clipExt = (needsVideoPass2 || needsAudioPass2) ? 'mov' : 'mp4';
   const step1Budget = needsVideoPass2 ? 45 : 95;
   const output = path.join(root, 'exports', `${job.id}.mp4`);
-  const run = (args, duration, startPct = 0, spanPct = 0, binary = ffmpeg) => new Promise((resolve, reject) => {
+  const formatRenderTime = sec => {
+    const safe = Math.max(0, Number(sec) || 0);
+    return `${String(Math.floor(safe / 60)).padStart(2, '0')}:${(safe % 60).toFixed(1).padStart(4, '0')}`;
+  };
+  const run = (args, duration, startPct = 0, spanPct = 0, binary = ffmpeg, stageLabel = '') => new Promise((resolve, reject) => {
     if (job.status === 'cancelled') return reject(new Error('Export cancelled'));
     const child = spawn(binary, ['-nostdin', '-hide_banner', '-y', '-progress', 'pipe:1', '-nostats', ...args], { cwd: work, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     job.process = child;
@@ -326,9 +330,13 @@ async function render(job, project) {
       const lines = pending.split('\n'); pending = lines.pop();
       for (const line of lines) if (line.startsWith('out_time_us=')) {
         const seconds = Number(line.split('=')[1]) / 1000000;
-        if (Number.isFinite(seconds) && spanPct > 0 && duration > 0) {
-          const ratio = Math.min(1, Math.max(0, seconds / duration));
-          job.progress = Math.min(98, Math.max(job.progress, Math.round(startPct + ratio * spanPct)));
+        if (Number.isFinite(seconds) && seconds >= 0 && duration > 0) {
+          const clamped = Math.min(duration, seconds);
+          if (spanPct > 0) {
+            const ratio = Math.min(1, Math.max(0, clamped / duration));
+            job.progress = Math.min(98, Math.max(job.progress, Math.round(startPct + ratio * spanPct)));
+          }
+          job.detail = `${stageLabel ? `${stageLabel} · ` : ''}Encoded ${formatRenderTime(clamped)} of ${formatRenderTime(duration)} · ${w}×${h} H.264`;
         }
       }
     });
@@ -356,11 +364,14 @@ async function render(job, project) {
     return { filters, outputLabel: `t${timedText.length - 1}` };
   };
   try {
+    job.stage = 'clips';
     let completed = 0;
     for (let i = 0; i < clips.length; i++) {
       const c = clips[i];
       const duration = (c.end - c.start) / c.speed;
+      const stageLabel = `Clip ${i + 1}/${clips.length}`;
       job.message = `Rendering clip ${i + 1} of ${clips.length}`;
+      job.detail = `${stageLabel} · ${formatRenderTime(duration)} at ${w}×${h} (${fps} fps)`;
       const args = ['-ss', String(c.start), '-t', String(c.end - c.start), '-i', path.join(root, 'media', c.media.id)];
       if (!c.media.audio) args.push('-f', 'lavfi', '-i', `anullsrc=r=48000:cl=stereo:d=${duration}`);
       const vf = `setpts=(PTS-STARTPTS)/${c.speed},crop=${c.crop.width}:${c.crop.height}:${c.crop.x}:${c.crop.y}:exact=1,scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,eq=brightness=${c.brightness}:contrast=${c.contrast}:saturation=${c.saturation},fps=${fps},format=yuv420p`;
@@ -375,13 +386,15 @@ async function render(job, project) {
       args.push('-map', '0:v:0', '-map', c.media.audio ? '0:a:0' : '1:a:0', '-vf', vf, '-af', af, '-t', String(duration), ...videoCodec, ...audioCodec, '-ar', '48000', '-ac', '2', '-video_track_timescale', '90000', ...(singlePassDirect ? ['-movflags', '+faststart'] : []), clipTarget);
       const startPct = clipTotal > 0 ? step1Budget * (completed / clipTotal) : 0;
       const spanPct = clipTotal > 0 ? step1Budget * (duration / clipTotal) : step1Budget;
-      await run(args, duration, startPct, spanPct);
+      await run(args, duration, startPct, spanPct, ffmpeg, stageLabel);
       completed += duration;
     }
     if (!singlePassDirect) {
+      job.stage = 'compose';
       let stage2Out;
       if (hasTransitions) {
         job.message = hasText ? 'Joining clips and adding timed text' : 'Finishing your MP4';
+        job.detail = `Blending transitions across ${clips.length} clips…`;
         const args = clips.flatMap((_, index) => ['-i', `${index}.${clipExt}`]);
         const filters = clips.map((_, index) => `[${index}:v]setpts=PTS-STARTPTS,fps=${fps}[base${index}]`);
         let elapsed = (clips[0].end - clips[0].start) / clips[0].speed;
@@ -407,25 +420,29 @@ async function render(job, project) {
         stage2Out = hasMusic ? 'stage2.mov' : output;
         const audioCodec = hasMusic ? ['-c:a', 'pcm_s16le'] : ['-c:a', 'aac', '-b:a', '192k'];
         args.push('-filter_complex', filters.join(';'), '-map', `[${finalVideo}]`, '-map', `[a${clips.length - 1}]`, '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', settings.quality, ...audioCodec, '-video_track_timescale', '90000', ...(hasMusic ? [] : ['-movflags', '+faststart']), stage2Out);
-        await run(args, total, step1Budget, 95 - step1Budget, hasText ? drawtextFfmpeg : ffmpeg);
+        await run(args, total, step1Budget, 95 - step1Budget, hasText ? drawtextFfmpeg : ffmpeg, 'Sequence master');
       } else {
         let concatOut = `0.${clipExt}`;
         if (clips.length > 1) {
           job.message = 'Finishing your MP4';
+          job.detail = `Joining ${clips.length} rendered clips seamlessly…`;
           fs.writeFileSync(path.join(work, 'clips.txt'), clips.map((_, i) => `file '${i}.${clipExt}'`).join('\n'));
           concatOut = (!hasText && !hasMusic) ? output : `joined.${clipExt}`;
-          await run(['-f', 'concat', '-safe', '0', '-i', 'clips.txt', '-c', 'copy', ...((!hasText && !hasMusic) ? ['-movflags', '+faststart'] : []), concatOut], total);
+          await run(['-f', 'concat', '-safe', '0', '-i', 'clips.txt', '-c', 'copy', ...((!hasText && !hasMusic) ? ['-movflags', '+faststart'] : []), concatOut], total, step1Budget, hasText ? 4 : (95 - step1Budget), ffmpeg, 'Sequence join');
         }
         stage2Out = concatOut;
         if (hasText) {
           job.message = 'Adding timed text';
+          job.detail = `Compositing ${timedText.length} title overlay${timedText.length === 1 ? '' : 's'}…`;
           const textGraph = prepareTextFilters('0:v');
           stage2Out = hasMusic ? 'stage2.mov' : output;
-          await run(['-i', concatOut, '-filter_complex', textGraph.filters.join(';'), '-map', `[${textGraph.outputLabel}]`, '-map', '0:a:0', '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'copy', '-video_track_timescale', '90000', ...(hasMusic ? [] : ['-movflags', '+faststart']), stage2Out], total, step1Budget, 95 - step1Budget, drawtextFfmpeg);
+          await run(['-i', concatOut, '-filter_complex', textGraph.filters.join(';'), '-map', `[${textGraph.outputLabel}]`, '-map', '0:a:0', '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'copy', '-video_track_timescale', '90000', ...(hasMusic ? [] : ['-movflags', '+faststart']), stage2Out], total, step1Budget, 95 - step1Budget, drawtextFfmpeg, 'Title composite');
         }
       }
       if (hasMusic) {
+        job.stage = 'compose';
         job.message = 'Mixing music and original sound'; job.progress = Math.max(job.progress, 96);
+        job.detail = `Mastering ${audible.length} soundtrack lane${audible.length === 1 ? '' : 's'} in AAC stereo…`;
         const args = ['-i', stage2Out];
         const filters = [`[0:a]aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${total}[original]`];
         audible.forEach((c, index) => {
@@ -434,7 +451,7 @@ async function render(job, project) {
         });
         filters.push(`[original]${audible.map((_, i) => `[m${i}]`).join('')}amix=inputs=${audible.length + 1}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=0:latency=1[mix]`);
         args.push('-filter_complex', filters.join(';'), '-map', '0:v:0', '-map', '[mix]', '-t', String(total), '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', output);
-        await run(args, total, 96, 2);
+        await run(args, total, 96, 2, ffmpeg, 'Audio master');
       }
     }
     if (job.status !== 'cancelled') {
@@ -447,10 +464,13 @@ async function render(job, project) {
       await catalog.exported(used);
       job.credits = catalog.credits(used);
       if (job.credits) fs.writeFileSync(path.join(root, 'exports', `${job.id}-credits.txt`), job.credits);
+      const sizeMb = (fs.statSync(output).size / 1048576).toFixed(1);
+      job.stage = 'complete';
       job.status = 'complete'; job.progress = 100; job.message = 'Your video is ready';
+      job.detail = `Rendered by Frame Studio · ${w}×${h} H.264 MP4 (${sizeMb} MB) · No watermark`;
     }
   } catch (error) {
-    if (job.status !== 'cancelled') { job.status = 'error'; job.message = error.status ? error.message : 'Export failed. Try a lower resolution or re-import the source clip.'; console.error(error.message); }
+    if (job.status !== 'cancelled') { job.stage = 'error'; job.status = 'error'; job.message = error.status ? error.message : 'Export failed. Try a lower resolution or re-import the source clip.'; job.detail = 'Frame Studio render stopped · Adjust output settings and try again'; console.error(error.message); }
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
     if (job.status !== 'complete') {
@@ -521,7 +541,7 @@ app.post('/api/exports', (req, res) => {
         if (oldJob.status !== 'rendering') { jobs.delete(oldId); if (jobs.size < 50) break; }
       }
     }
-    const job = { id: randomUUID(), status: 'rendering', progress: 0, message: 'Preparing your video' };
+    const job = { id: randomUUID(), status: 'rendering', stage: 'engine', progress: 0, message: 'Preparing your video', detail: 'Starting native Frame Studio FFmpeg pipeline…', startedAt: Date.now() };
     jobs.set(job.id, job);
     render(job, project).catch(error => { job.status = 'error'; job.message = error.message; });
     res.json({ id: job.id });
@@ -535,7 +555,7 @@ app.get('/api/exports/:id', (req, res) => {
 });
 app.delete('/api/exports/:id', (req, res) => {
   const job = jobs.get(req.params.id);
-  if (job?.status === 'rendering') { job.status = 'cancelled'; job.message = 'Export cancelled'; job.process?.kill(); }
+  if (job?.status === 'rendering') { job.status = 'cancelled'; job.stage = 'cancelled'; job.message = 'Export cancelled'; job.detail = 'Canceled by user · Ready to export again anytime'; job.process?.kill(); }
   res.json({ ok: true });
 });
 app.get('/api/exports/:id/download', (req, res) => {

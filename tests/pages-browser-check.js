@@ -242,13 +242,16 @@ async function main() {
 
     const base64Mp4 = fixtures.mp4Bytes.toString('base64');
     await page.evaluate((b64) => {
+      window.__releaseExportGate = null;
       window.__FrameBrowserRenderOverride = async (job, validated, helpers) => {
         if (validated.clips.length !== 3 || validated.textClips.length !== 1 || validated.music.length !== 2) {
           throw new Error('Unexpected validated browser project structure');
         }
+        job.stage = 'clips';
         job.progress = 55;
-        job.message = 'Rendering browser MP4…';
-        await new Promise(r => setTimeout(r, 60));
+        job.message = 'Rendering clip 2 of 3';
+        job.detail = 'Clip 2/3 · Encoded 00:01.1 of 00:01.4 · 1280×720 H.264';
+        await new Promise(resolve => { window.__releaseExportGate = resolve; });
         const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
         job.downloadUrl = URL.createObjectURL(new Blob([raw], { type: 'video/mp4' }));
         const audible = validated.music.filter(c => c.volume > 0);
@@ -256,18 +259,32 @@ async function main() {
         if (job.credits) {
           job.creditsUrl = URL.createObjectURL(new Blob([job.credits], { type: 'text/plain;charset=utf-8' }));
         }
+        job.stage = 'complete';
         job.progress = 100;
         job.status = 'complete';
         job.message = 'Your video is ready';
+        job.detail = 'Rendered by Frame Studio · 1280×720 H.264 MP4 · No watermark';
       };
     }, base64Mp4);
 
+    assert.equal(await page.locator('#workspace-mode-badge').textContent(), 'Browser Studio', 'Branded Browser Studio badge shown');
     await page.locator('#project-name').fill('GitHub Pages Cut');
     await page.locator('#open-export').click();
+    assert.equal(await page.locator('#export-pill-clips').textContent(), '3 clips', 'Branded export summary pill shows clip count');
     assert.equal(await page.locator('#export-credit-note').isVisible(), true, 'Attribution reminder visible before export');
     await page.locator('#start-export').click();
+    await page.waitForFunction(() => document.getElementById('export-percent').textContent === '55%');
+    await page.waitForTimeout(180);
+    assert.equal(await page.locator('#export-stage-label').textContent(), 'FRAME STUDIO · ENCODING');
+    assert.equal(await page.locator('#export-steps li[data-step="engine"]').evaluate(el => el.classList.contains('is-done')), true, 'Engine step marked done');
+    assert.equal(await page.locator('#export-steps li[data-step="clips"]').evaluate(el => el.classList.contains('is-active')), true, 'Render step marked active');
+    assert.match(await page.locator('#export-detail').textContent(), /1280×720 H\.264/);
+    await page.screenshot({ path: path.join(resultsDir, 'export-rendering.png') });
+    await page.evaluate(() => window.__releaseExportGate?.());
     await page.locator('#download-export').waitFor({ state: 'visible', timeout: 20000 });
+    assert.equal(await page.locator('#export-stage-label').textContent(), 'FRAME STUDIO · READY');
     assert.equal(await page.locator('#download-credits').isVisible(), true, 'Credits download visible');
+    await page.screenshot({ path: path.join(resultsDir, 'export-ready.png') });
 
     const creditsDownloadPromise = page.waitForEvent('download');
     await page.locator('#download-credits').click();

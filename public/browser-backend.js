@@ -102,6 +102,11 @@
     if (footerLabel && footerLabel.textContent.includes('LOCAL WORKSPACE')) {
       footerLabel.innerHTML = 'FRAME STUDIO <span class="footer-separator">/</span> BROWSER WORKSPACE';
     }
+    const modeBadge = document.getElementById('workspace-mode-badge');
+    if (modeBadge) {
+      modeBadge.textContent = 'Browser Studio';
+      modeBadge.title = '100% private in-browser editing and WebAssembly MP4 rendering';
+    }
   }
 
   async function ensureMode() {
@@ -659,39 +664,102 @@
     });
   }
 
-  async function toBlobUrl(url, mimeType) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Could not fetch ${url}`);
-    return URL.createObjectURL(new Blob([await res.arrayBuffer()], { type: mimeType }));
+  let engineReady = false;
+  const engineProgressListeners = new Set();
+
+  function notifyEngineProgress(payload) {
+    for (const fn of engineProgressListeners) {
+      try { fn(payload); } catch {}
+    }
   }
 
-  async function ensureFFmpegClass() {
-    if (global.FFmpegWASM?.FFmpeg) return ffmpegLoader;
-    if (ffmpegLoader) return ffmpegLoader;
-    ffmpegLoader = (async () => {
-      try {
-        const localCheck = await fetch('./vendor/ffmpeg/ffmpeg.js', { method: 'HEAD' });
-        if (localCheck.ok && !(localCheck.headers.get('content-type') || '').includes('text/html')) {
-          await loadScriptOnce('./vendor/ffmpeg/ffmpeg.js');
-          const base = new URL('./vendor/ffmpeg/', global.location.href).href;
-          return {
-            FFmpeg: global.FFmpegWASM.FFmpeg,
-            loadConfig: { coreURL: `${base}ffmpeg-core.js`, wasmURL: `${base}ffmpeg-core.wasm` }
-          };
+  async function fetchBlobUrlWithProgress(url, mimeType, fallbackTotal = 0, onChunkProgress = null) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Could not fetch ${url}`);
+    const total = Number(res.headers.get('content-length')) || fallbackTotal || 0;
+    if (!res.body || typeof res.body.getReader !== 'function') {
+      const buf = await res.arrayBuffer();
+      if (onChunkProgress) onChunkProgress(buf.byteLength, total || buf.byteLength);
+      return URL.createObjectURL(new Blob([buf], { type: mimeType }));
+    }
+    const reader = res.body.getReader();
+    const chunks = [];
+    let loaded = 0;
+    let lastReport = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        loaded += value.byteLength;
+        const now = Date.now();
+        if (onChunkProgress && (now - lastReport >= 60 || (total && loaded >= total))) {
+          lastReport = now;
+          onChunkProgress(loaded, total);
         }
-      } catch {}
-      await loadScriptOnce(`${FFMPEG_CDN}/ffmpeg.js`);
-      const workerCode = await (await fetch(`${FFMPEG_CDN}/814.ffmpeg.js`)).text();
-      const patchedWorker = workerCode.replace(/importScripts\(([^)]+)\)/g, (match) => match);
-      const classWorkerURL = URL.createObjectURL(new Blob([`self.__webpack_public_path__ = "${FFMPEG_CDN}/";\n${patchedWorker}`], { type: 'text/javascript' }));
-      const coreURL = await toBlobUrl(`${FFMPEG_CORE_CDN}/ffmpeg-core.js`, 'text/javascript');
-      const wasmURL = await toBlobUrl(`${FFMPEG_CORE_CDN}/ffmpeg-core.wasm`, 'application/wasm');
-      return { FFmpeg: global.FFmpegWASM.FFmpeg, loadConfig: { classWorkerURL, coreURL, wasmURL } };
-    })().catch(error => {
-      ffmpegLoader = null;
-      throw error;
-    });
-    return ffmpegLoader;
+      }
+    }
+    if (onChunkProgress) onChunkProgress(loaded, total || loaded);
+    return URL.createObjectURL(new Blob(chunks, { type: mimeType }));
+  }
+
+  async function ensureFFmpegClass(onProgress) {
+    if (engineReady && ffmpegLoader) return ffmpegLoader;
+    if (onProgress) engineProgressListeners.add(onProgress);
+    try {
+      if (!ffmpegLoader) {
+        ffmpegLoader = (async () => {
+          notifyEngineProgress({ progress: 2, message: 'Loading Frame Studio video engine…', detail: 'Connecting to WebAssembly H.264 runtime…' });
+          try {
+            const localCheck = await fetch('./vendor/ffmpeg/ffmpeg.js', { method: 'HEAD' });
+            if (localCheck.ok && !(localCheck.headers.get('content-type') || '').includes('text/html')) {
+              await loadScriptOnce('./vendor/ffmpeg/ffmpeg.js');
+              notifyEngineProgress({ progress: 3, message: 'Loading Frame Studio video engine…', detail: 'Preparing H.264 core module…' });
+              const base = new URL('./vendor/ffmpeg/', global.location.href).href;
+              const coreURL = await fetchBlobUrlWithProgress(`${base}ffmpeg-core.js`, 'text/javascript', 114674);
+              const wasmURL = await fetchBlobUrlWithProgress(`${base}ffmpeg-core.wasm`, 'application/wasm', 32232419, (loaded, total) => {
+                const denom = Math.max(loaded, total || 32232419);
+                const pct = 4 + Math.round(10 * Math.min(1, loaded / denom));
+                const mbLoaded = (loaded / 1048576).toFixed(1);
+                const mbTotal = (denom / 1048576).toFixed(1);
+                notifyEngineProgress({
+                  progress: pct,
+                  message: 'Loading Frame Studio video engine…',
+                  detail: `${mbLoaded} / ${mbTotal} MB downloaded · Cached after first export`
+                });
+              });
+              engineReady = true;
+              return { FFmpeg: global.FFmpegWASM.FFmpeg, loadConfig: { coreURL, wasmURL } };
+            }
+          } catch {}
+          await loadScriptOnce(`${FFMPEG_CDN}/ffmpeg.js`);
+          const workerCode = await (await fetch(`${FFMPEG_CDN}/814.ffmpeg.js`)).text();
+          const patchedWorker = workerCode.replace(/importScripts\(([^)]+)\)/g, (match) => match);
+          const classWorkerURL = URL.createObjectURL(new Blob([`self.__webpack_public_path__ = "${FFMPEG_CDN}/";\n${patchedWorker}`], { type: 'text/javascript' }));
+          const coreURL = await fetchBlobUrlWithProgress(`${FFMPEG_CORE_CDN}/ffmpeg-core.js`, 'text/javascript', 114674);
+          const wasmURL = await fetchBlobUrlWithProgress(`${FFMPEG_CORE_CDN}/ffmpeg-core.wasm`, 'application/wasm', 32232419, (loaded, total) => {
+            const denom = Math.max(loaded, total || 32232419);
+            const pct = 4 + Math.round(10 * Math.min(1, loaded / denom));
+            const mbLoaded = (loaded / 1048576).toFixed(1);
+            const mbTotal = (denom / 1048576).toFixed(1);
+            notifyEngineProgress({
+              progress: pct,
+              message: 'Loading Frame Studio video engine…',
+              detail: `${mbLoaded} / ${mbTotal} MB downloaded · Cached after first export`
+            });
+          });
+          engineReady = true;
+          return { FFmpeg: global.FFmpegWASM.FFmpeg, loadConfig: { classWorkerURL, coreURL, wasmURL } };
+        })().catch(error => {
+          ffmpegLoader = null;
+          engineReady = false;
+          throw error;
+        });
+      }
+      return await ffmpegLoader;
+    } finally {
+      if (onProgress) engineProgressListeners.delete(onProgress);
+    }
   }
 
   async function renderTextOverlayPng(clip, frameW, frameH) {
@@ -735,7 +803,16 @@
     return fallback;
   }
 
+  function formatRenderTime(seconds) {
+    const safe = Math.max(0, Number(seconds) || 0);
+    const mins = Math.floor(safe / 60);
+    const secs = (safe % 60).toFixed(1).padStart(4, '0');
+    return `${String(mins).padStart(2, '0')}:${secs}`;
+  }
+
   async function renderBrowserExport(job, project) {
+    job.startedAt = job.startedAt || Date.now();
+    job.stage = 'engine';
     if (typeof global.__FrameBrowserRenderOverride === 'function') {
       return global.__FrameBrowserRenderOverride(job, project, { buildCredits, reportEpidemic });
     }
@@ -752,29 +829,64 @@
     const hasMusic = audible.length > 0;
     const needsVideoPass2 = hasTransitions || hasText;
     const singlePassDirect = clips.length === 1 && !needsVideoPass2 && !hasMusic;
-    const step1Budget = needsVideoPass2 ? 45 : 95;
+    const step1Start = 16;
+    const step1Span = needsVideoPass2 ? 39 : (hasMusic ? 79 : 82);
 
     let ffmpeg;
-    let activeStage = { duration: 1, startPct: 0, spanPct: 0 };
+    let activeStage = { duration: 1, startPct: 0, spanPct: 0, label: '' };
+    const reportEncodeTime = rawSeconds => {
+      if (!Number.isFinite(rawSeconds) || rawSeconds < 0 || activeStage.duration <= 0) return;
+      const clamped = Math.min(activeStage.duration, rawSeconds);
+      if (activeStage.spanPct > 0) {
+        const ratio = Math.min(1, Math.max(0, clamped / activeStage.duration));
+        job.progress = Math.min(98, Math.max(job.progress, Math.round(activeStage.startPct + ratio * activeStage.spanPct)));
+      }
+      job.detail = `${activeStage.label ? `${activeStage.label} · ` : ''}Encoded ${formatRenderTime(clamped)} of ${formatRenderTime(activeStage.duration)} · ${w}×${h} H.264`;
+    };
     try {
-      job.message = 'Loading browser video engine (cached after first use)…';
-      const engine = await ensureFFmpegClass();
+      if (engineReady) {
+        job.progress = Math.max(job.progress, 12);
+        job.message = 'Frame Studio engine ready';
+        job.detail = 'Using cached WebAssembly H.264 runtime';
+      } else {
+        job.progress = Math.max(job.progress, 1);
+        job.message = 'Loading Frame Studio video engine…';
+        job.detail = 'Preparing private in-browser H.264 encoder (cached after first use)…';
+      }
+      const engine = await ensureFFmpegClass(update => {
+        if (job.status !== 'rendering') return;
+        job.stage = 'engine';
+        if (update.progress) job.progress = Math.max(job.progress, update.progress);
+        if (update.message) job.message = update.message;
+        if (update.detail) job.detail = update.detail;
+      });
       if (job.status === 'cancelled') return;
+      job.progress = Math.max(job.progress, 15);
+      job.message = 'Starting Frame Studio H.264 encoder…';
+      job.detail = `Preparing ${clips.length} clip${clips.length === 1 ? '' : 's'} · ${w}×${h} @ ${fps} fps`;
       ffmpeg = new engine.FFmpeg();
       job.ffmpeg = ffmpeg;
       ffmpeg.on('progress', ({ time }) => {
         const seconds = Number(time) / 1000000;
-        if (Number.isFinite(seconds) && activeStage.spanPct > 0 && activeStage.duration > 0) {
-          const ratio = Math.min(1, Math.max(0, seconds / activeStage.duration));
-          job.progress = Math.min(98, Math.max(job.progress, Math.round(activeStage.startPct + ratio * activeStage.spanPct)));
+        if (Number.isFinite(seconds) && seconds >= 0 && seconds <= activeStage.duration * 1.5) {
+          reportEncodeTime(seconds);
+        }
+      });
+      ffmpeg.on('log', ({ message }) => {
+        if (typeof message !== 'string') return;
+        const match = /time=(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(message);
+        if (match) {
+          const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+          reportEncodeTime(seconds);
         }
       });
       await ffmpeg.load(engine.loadConfig);
       if (job.status === 'cancelled') return;
 
-      const execStage = async (args, duration, startPct = 0, spanPct = 0) => {
+      const execStage = async (args, duration, startPct = 0, spanPct = 0, label = '') => {
         if (job.status === 'cancelled') throw new Error('Export cancelled');
-        activeStage = { duration, startPct, spanPct };
+        activeStage = { duration, startPct, spanPct, label };
+        if (startPct > 0) job.progress = Math.max(job.progress, Math.round(startPct));
         const code = await ffmpeg.exec(['-hide_banner', '-y', ...args]);
         if (job.status === 'cancelled') throw new Error('Export cancelled');
         if (code !== 0) throw new Error('FFmpeg browser render failed');
@@ -784,27 +896,35 @@
       const ensureInputFile = async (record, prefix, fallbackExt) => {
         if (writtenSources.has(record.id)) return writtenSources.get(record.id);
         const filename = `${prefix}-${writtenSources.size}${extForBlob(record, fallbackExt)}`;
+        const sizeMb = ((record.blob?.size || 0) / 1048576).toFixed(1);
+        job.detail = `Staging source media (${sizeMb} MB) in studio memory…`;
         await ffmpeg.writeFile(filename, new Uint8Array(await record.blob.arrayBuffer()));
         writtenSources.set(record.id, filename);
         return filename;
       };
 
+      job.stage = 'clips';
       let completed = 0;
       for (let i = 0; i < clips.length; i++) {
         const c = clips[i];
         const duration = (c.end - c.start) / c.speed;
+        const stageLabel = `Clip ${i + 1}/${clips.length}`;
         job.message = `Rendering clip ${i + 1} of ${clips.length}`;
+        job.detail = `${stageLabel} · ${formatRenderTime(duration)} at ${w}×${h} (${fps} fps)`;
+        const clipStartPct = step1Start + (clipTotal > 0 ? step1Span * (completed / clipTotal) : 0);
+        const clipSpanPct = clipTotal > 0 ? step1Span * (duration / clipTotal) : step1Span;
         const args = [];
         if (c.media.generated === 'black') {
           args.push('-f', 'lavfi', '-i', `color=c=black:s=${w}x${h}:r=${fps}:d=${duration}`);
           args.push('-f', 'lavfi', '-i', `anullsrc=r=48000:cl=stereo:d=${duration}`);
           const clipTarget = singlePassDirect ? 'out.mp4' : `clip-${i}.mp4`;
-          const vCodec = needsVideoPass2 ? ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '14'] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', settings.quality];
+          const vCodec = needsVideoPass2 ? ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '14'] : ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', settings.quality];
           const blackVf = `eq=brightness=${c.brightness}:contrast=${c.contrast}:saturation=${c.saturation},format=yuv420p`;
           args.push('-map', '0:v:0', '-map', '1:a:0', '-vf', blackVf, '-af', `aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${duration}`, '-t', String(duration), ...vCodec, '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-video_track_timescale', '90000', ...(singlePassDirect ? ['-movflags', '+faststart'] : []), clipTarget);
-          await execStage(args, duration, clipTotal > 0 ? step1Budget * (completed / clipTotal) : 0, clipTotal > 0 ? step1Budget * (duration / clipTotal) : step1Budget);
+          await execStage(args, duration, clipStartPct, clipSpanPct, stageLabel);
         } else {
           const inputName = await ensureInputFile(c.record, 'src', '.mp4');
+          job.detail = `${stageLabel} · Encoding 00:00.0 of ${formatRenderTime(duration)} · ${w}×${h} H.264`;
           args.push('-ss', String(c.start), '-t', String(c.end - c.start), '-i', inputName);
           if (!c.media.audio) args.push('-f', 'lavfi', '-i', `anullsrc=r=48000:cl=stereo:d=${duration}`);
           const vf = `setpts=(PTS-STARTPTS)/${c.speed},crop=${c.crop.width}:${c.crop.height}:${c.crop.x}:${c.crop.y}:exact=1,scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,eq=brightness=${c.brightness}:contrast=${c.contrast}:saturation=${c.saturation},fps=${fps},format=yuv420p`;
@@ -813,10 +933,10 @@
           while (tempo > 2) { tempoFilters.push('atempo=2'); tempo /= 2; }
           tempoFilters.push(`atempo=${tempo}`);
           const af = `asetpts=PTS-STARTPTS,${tempoFilters.join(',')},volume=${c.volume},aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${duration}`;
-          const vCodec = needsVideoPass2 ? ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '14'] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', settings.quality];
+          const vCodec = needsVideoPass2 ? ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '14'] : ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', settings.quality];
           const clipTarget = singlePassDirect ? 'out.mp4' : `clip-${i}.mp4`;
           args.push('-map', '0:v:0', '-map', c.media.audio ? '0:a:0' : '1:a:0', '-vf', vf, '-af', af, '-t', String(duration), ...vCodec, '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-video_track_timescale', '90000', ...(singlePassDirect ? ['-movflags', '+faststart'] : []), clipTarget);
-          await execStage(args, duration, clipTotal > 0 ? step1Budget * (completed / clipTotal) : 0, clipTotal > 0 ? step1Budget * (duration / clipTotal) : step1Budget);
+          await execStage(args, duration, clipStartPct, clipSpanPct, stageLabel);
         }
         completed += duration;
       }
@@ -827,9 +947,13 @@
       writtenSources.clear();
 
       if (!singlePassDirect) {
+        job.stage = 'compose';
+        const pass2Start = step1Start + step1Span;
+        const pass2End = hasMusic ? 95 : 98;
         let stage2Out;
         if (hasTransitions) {
           job.message = hasText ? 'Joining clips and adding timed text' : 'Finishing your MP4';
+          job.detail = `Blending transitions across ${clips.length} clips…`;
           const args = clips.flatMap((_, idx) => ['-i', `clip-${idx}.mp4`]);
           const filters = clips.map((_, idx) => `[${idx}:v]setpts=PTS-STARTPTS,fps=${fps}[base${idx}]`);
           let elapsed = (clips[0].end - clips[0].start) / clips[0].speed;
@@ -864,20 +988,22 @@
             finalV = 'vout';
           }
           stage2Out = hasMusic ? 'stage2.mp4' : 'out.mp4';
-          args.push('-filter_complex', filters.join(';'), '-map', `[${finalV}]`, '-map', `[a${clips.length - 1}]`, '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-crf', settings.quality, '-c:a', 'aac', '-b:a', '192k', '-video_track_timescale', '90000', ...(hasMusic ? [] : ['-movflags', '+faststart']), stage2Out);
-          await execStage(args, total, step1Budget, 95 - step1Budget);
+          args.push('-filter_complex', filters.join(';'), '-map', `[${finalV}]`, '-map', `[a${clips.length - 1}]`, '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'ultrafast', '-crf', settings.quality, '-c:a', 'aac', '-b:a', '192k', '-video_track_timescale', '90000', ...(hasMusic ? [] : ['-movflags', '+faststart']), stage2Out);
+          await execStage(args, total, pass2Start, pass2End - pass2Start, 'Sequence master');
         } else {
           let concatOut = 'clip-0.mp4';
           if (clips.length > 1) {
             job.message = 'Finishing your MP4';
+            job.detail = `Joining ${clips.length} rendered clips seamlessly…`;
             const listContent = clips.map((_, idx) => `file 'clip-${idx}.mp4'`).join('\n');
             await ffmpeg.writeFile('clips.txt', new TextEncoder().encode(listContent));
             concatOut = (!hasText && !hasMusic) ? 'out.mp4' : 'joined.mp4';
-            await execStage(['-f', 'concat', '-safe', '0', '-i', 'clips.txt', '-c', 'copy', ...((!hasText && !hasMusic) ? ['-movflags', '+faststart'] : []), concatOut], total);
+            await execStage(['-f', 'concat', '-safe', '0', '-i', 'clips.txt', '-c', 'copy', ...((!hasText && !hasMusic) ? ['-movflags', '+faststart'] : []), concatOut], total, pass2Start, hasText ? 4 : (pass2End - pass2Start), 'Sequence join');
           }
           stage2Out = concatOut;
           if (hasText) {
             job.message = 'Adding timed text';
+            job.detail = `Compositing ${timedText.length} title overlay${timedText.length === 1 ? '' : 's'}…`;
             const args = ['-i', concatOut];
             const filters = [];
             let prevV = '0:v';
@@ -893,8 +1019,8 @@
             }
             filters.push(`[${prevV}]format=yuv420p[vout]`);
             stage2Out = hasMusic ? 'stage2.mp4' : 'out.mp4';
-            args.push('-filter_complex', filters.join(';'), '-map', '[vout]', '-map', '0:a:0', '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-crf', settings.quality, '-c:a', 'copy', '-video_track_timescale', '90000', ...(hasMusic ? [] : ['-movflags', '+faststart']), stage2Out);
-            await execStage(args, total, step1Budget, 95 - step1Budget);
+            args.push('-filter_complex', filters.join(';'), '-map', '[vout]', '-map', '0:a:0', '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'ultrafast', '-crf', settings.quality, '-c:a', 'copy', '-video_track_timescale', '90000', ...(hasMusic ? [] : ['-movflags', '+faststart']), stage2Out);
+            await execStage(args, total, pass2Start, pass2End - pass2Start, 'Title composite');
           }
         }
 
@@ -903,7 +1029,9 @@
         }
 
         if (hasMusic) {
+          job.stage = 'compose';
           job.message = 'Mixing music and original sound';
+          job.detail = `Mastering ${audible.length} soundtrack lane${audible.length === 1 ? '' : 's'} in AAC stereo…`;
           job.progress = Math.max(job.progress, 96);
           const args = ['-i', stage2Out];
           const filters = [`[0:a]aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${total}[original]`];
@@ -915,11 +1043,15 @@
           }
           filters.push(`[original]${audible.map((_, i) => `[m${i}]`).join('')}amix=inputs=${audible.length + 1}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=0:latency=1[mix]`);
           args.push('-filter_complex', filters.join(';'), '-map', '0:v:0', '-map', '[mix]', '-t', String(total), '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', 'out.mp4');
-          await execStage(args, total, 96, 2);
+          await execStage(args, total, 96, 2, 'Audio master');
         }
       }
 
       if (job.status !== 'cancelled') {
+        job.stage = 'compose';
+        job.progress = 99;
+        job.message = 'Packaging MP4 file…';
+        job.detail = 'Finalizing fast-start MP4 download…';
         const outputData = await ffmpeg.readFile('out.mp4');
         const mp4Blob = new Blob([outputData.slice().buffer], { type: 'video/mp4' });
         job.downloadUrl = URL.createObjectURL(mp4Blob);
@@ -929,14 +1061,19 @@
         if (job.credits) {
           job.creditsUrl = URL.createObjectURL(new Blob([job.credits], { type: 'text/plain;charset=utf-8' }));
         }
+        const sizeMb = (mp4Blob.size / 1048576).toFixed(1);
+        job.stage = 'complete';
         job.status = 'complete';
         job.progress = 100;
         job.message = 'Your video is ready';
+        job.detail = `Rendered by Frame Studio · ${w}×${h} H.264 MP4 (${sizeMb} MB) · No watermark`;
       }
     } catch (error) {
       if (job.status !== 'cancelled') {
+        job.stage = 'error';
         job.status = 'error';
         job.message = error.status ? error.message : 'Browser export failed. Try 720p resolution or smaller source clips.';
+        job.detail = 'Frame Studio render stopped · Adjust output settings and try again';
         console.error(error);
       }
     } finally {
@@ -1038,7 +1175,7 @@
         throw makeError('An export is already running. Wait for it to finish or cancel it.', 409);
       }
       const validated = await validateBrowserProject(parseJsonBody(options));
-      const job = { id: crypto.randomUUID(), status: 'rendering', progress: 0, message: 'Preparing your video' };
+      const job = { id: crypto.randomUUID(), status: 'rendering', stage: 'engine', progress: 0, message: 'Preparing your video', detail: 'Initializing Frame Studio export pipeline…', startedAt: Date.now() };
       jobs.set(job.id, job);
       renderBrowserExport(job, validated);
       return { id: job.id };
@@ -1054,7 +1191,9 @@
       if (method === 'DELETE') {
         if (job?.status === 'rendering') {
           job.status = 'cancelled';
+          job.stage = 'cancelled';
           job.message = 'Export cancelled';
+          job.detail = 'Canceled by user · Ready to export again anytime';
           try { job.ffmpeg?.terminate(); } catch {}
         }
         return { ok: true };
