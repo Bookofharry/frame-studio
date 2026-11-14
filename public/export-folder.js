@@ -54,14 +54,15 @@ async function unusedExportFilename(directory, requested) {
 }
 function downloadToBrowser(name) {
   const link = document.createElement('a');
-  link.href = `/api/exports/${jobId}/download?name=${encodeURIComponent(name)}`;
+  link.href = FrameBackend.downloadUrl(jobId, name);
+  if (FrameBackend.isBrowserMode()) link.download = FrameExportName.filename(name);
   document.body.append(link); link.click(); link.remove();
   $('filename-dialog').close();
 }
 async function saveToExportDirectory(directory, requested) {
   if (!await canWriteExportDirectory(directory)) throw new Error('Folder access was not granted. Choose another folder or Browser Downloads.');
   const filename = await unusedExportFilename(directory, requested);
-  const response = await fetch(`/api/exports/${jobId}/download?name=${encodeURIComponent(filename)}`);
+  const response = await fetch(FrameBackend.downloadUrl(jobId, filename));
   if (!response.ok || !response.body) throw new Error('The MP4 could not be opened for saving. Try downloading it again.');
   const file = await directory.getFileHandle(filename, { create: true });
   const writable = await file.createWritable();

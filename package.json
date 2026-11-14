@@ -11,6 +11,8 @@
     "test:transition": "node tests/transition-browser-check.js",
     "test:music": "node tests/music-browser-check.js",
     "test:catalog": "node tests/catalog-browser-check.js",
+    "test:pages": "node tests/pages-browser-check.js",
+    "build:pages": "node scripts/build-pages.js",
     "catalog:rebuild": "node scripts/build-audio-catalog.js"
   },
   "dependencies": {

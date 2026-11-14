@@ -35,7 +35,8 @@ dialog{width:min(500px,calc(100% - 24px));background:#20252b;color:var(--text);b
 .project-row-details{min-width:0;flex:1}
 .project-row-details strong,.project-row-details small{display:block;overflow-wrap:anywhere}
 .project-row-details strong{font-size:12px}.project-row-details small{margin-top:5px;color:#91a7b5;font-size:9px}
-.project-row button{flex-shrink:0}.projects-actions{flex-wrap:wrap}
+.project-row button{flex-shrink:0}.project-row-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}.project-row .project-delete{padding:7px 9px}.project-row .project-delete.confirming{border-color:#d96b6b;background:#442326;color:#ffd9d9}.projects-actions{flex-wrap:wrap}#cleanup-storage{margin-right:auto}
+@media(max-width:560px){.project-row{flex-wrap:wrap}.project-row-actions{width:100%;justify-content:flex-end}}
 #new-project-name{display:block;width:100%;margin-top:7px;padding:9px}
 #black-duration{display:block;width:100%;margin-top:7px;padding:9px}
 .timeline-clip.black-screen{background:#080808;border-color:#657079}

@@ -160,7 +160,6 @@ function finishMusicDrag(event, cancelled = false) {
 }
 function setupMusic() {
   $('import-music').onclick = () => $('music-input').click();
-  $('timeline-music').onclick = () => { document.querySelector('[data-workspace="audio"]').click(); $('music-input').click(); };
   $('music-input').onchange = event => importMusic([...event.target.files]);
   $('music-content').ondragover = event => { event.preventDefault(); };
   $('music-content').ondrop = event => { event.preventDefault(); importMusic([...event.dataTransfer.files]); };

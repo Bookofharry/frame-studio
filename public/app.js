@@ -6,7 +6,7 @@ const cropFor = clip => clip.crop || FrameCrop.full(mediaFor(clip));
 const defaults = () => ({ id: crypto.randomUUID(), name: 'Untitled project', mediaIds: [], clips: [], music: [], textClips: [], settings: { aspect: 'source', text: '', resolution: 'source', fps: 'source', quality: '18', transitionDuration: 0.35 } });
 let project = defaults(), library = [], allMedia = [], selected = -1, history = [], future = [], playing = false, importing = false, jobId = null, pollTimer, toastTimer;
 let pixelsPerSecond = 60, timelineGesture = null, gestureMoved = false, previewFrame = 0;
-let previewGeneration = 0;
+let previewGeneration = 0, pendingSeek = null;
 try { const saved = JSON.parse(localStorage.getItem('frame-project')); if (saved?.clips && saved?.settings) project = saved; } catch {}
 project.id ||= crypto.randomUUID();
 const projectIndexKey = 'frame-project-index';
@@ -52,7 +52,7 @@ function save() {
 }
 function remember() { history.push(JSON.stringify(project)); if (history.length > 60) history.shift(); future = []; updateHistoryButtons(); }
 function updateHistoryButtons() { $('undo').disabled = !history.length; $('redo').disabled = !future.length; }
-async function api(url, options) { const response = await fetch(url, options); const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Something went wrong. Please try again.'); return result; }
+async function api(url, options) { return FrameBackend.request(url, options); }
 function renderLibrary() {
   $('media-count').textContent = library.length;
   $('library').replaceChildren();
@@ -243,10 +243,12 @@ function selectClip(index, at, resume = false) {
   selectedTextId = '';
   selected = index; const clip = current(), media = mediaFor(clip);
   showSelectedClip();
-  if (!clip || !media) { video.dataset.mediaId = ''; video.removeAttribute('src'); video.load(); preloadFollowing(-1); updateTime(); return; }
+  if (!clip || !media) { pendingSeek = null; video.dataset.mediaId = ''; video.removeAttribute('src'); video.load(); preloadFollowing(-1); updateTime(); return; }
   preloadFollowing(index);
   const seek = at === undefined ? clip.start : at;
-  const ready = () => { video.currentTime = Math.min(clip.end - 0.001, Math.max(clip.start, seek)); applyPreview(); if (resume) video.play().catch(() => { stop(); toast('This file cannot play in the browser. Try an H.264 MP4; export may still work.'); }); updateTime(); };
+  const targetTime = Math.min(clip.end - 0.001, Math.max(clip.start, seek));
+  pendingSeek = targetTime;
+  const ready = () => { pendingSeek = null; video.currentTime = targetTime; applyPreview(); if (resume) video.play().catch(() => { stop(); toast('This file cannot play in the browser. Try an H.264 MP4; export may still work.'); }); updateTime(); };
   if (video.dataset.mediaId !== media.id) { video.dataset.mediaId = media.id; video.src = media.url; video.onloadedmetadata = ready; }
   else if (video.readyState >= 1) ready(); else video.onloadedmetadata = ready;
   renderControls();
@@ -291,7 +293,7 @@ function applyPreview() {
   $('player-format').textContent = project.settings.aspect === 'source' ? 'Original' : project.settings.aspect;
 }
 function updateTime() {
-  const clip = current(); const position = clip ? offset(selected) + Math.max(0, Math.min(clip.end, video.currentTime || clip.start) - clip.start) / clip.speed : 0;
+  const clip = current(); const clipTime = pendingSeek ?? (video.currentTime || clip?.start || 0); const position = clip ? offset(selected) + Math.max(0, Math.min(clip.end, clipTime) - clip.start) / clip.speed : 0;
   const fade = transitionLength(selected), progress = clip && fade ? Math.max(0, Math.min(1, (position - (offset(selected) + length(clip) - fade)) / fade)) : 0;
   const next = project.clips[selected + 1];
   if (next && fade && progress > 0 && preloadVideo.readyState >= 2 && !preloadVideo.seeking) {
@@ -330,7 +332,7 @@ function nextClip() {
     oldViewport.id = 'next-viewport'; activeViewport.id = 'crop-viewport';
     video = preloadVideo; preloadVideo = oldVideo; video.muted = false; selected = nextIndex;
     video.volume = next.volume; activeViewport.style.opacity = 1; oldViewport.style.opacity = 0;
-    selectedMusicId = ''; showSelectedClip(); renderControls(); preloadFollowing(nextIndex); applyPreview(); renderTimeline();
+    pendingSeek = null; selectedMusicId = ''; selectedTextId = ''; showSelectedClip(); renderControls(); preloadFollowing(nextIndex); applyPreview(); renderTimeline();
   } else { selectClip(nextIndex, next.start + transitionLength(nextIndex - 1) * next.speed, true); renderTimeline(); }
 }
 function checkClipEnd() { const clip = current(); if (playing && clip && !video.seeking && video.dataset.mediaId === clip.mediaId && video.currentTime >= clip.end - 0.015) nextClip(); }
@@ -438,19 +440,90 @@ function downloadProjectBackup() {
   const link = document.createElement('a'); link.href = url; link.download = `${project.name.replace(/[^a-z0-9 _-]/gi, '') || 'Frame'}.frame.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); toast('Backup downloaded. Keep the app’s data folder with its source videos.');
 }
 $('save-project').onclick = () => { project.name = $('project-name').value.trim() || 'Untitled project'; $('project-name').value = project.name; save(); toast('Project saved. Open Projects to switch between edits.'); };
+let confirmingDeleteProjectId = '', cleaningStorage = false;
 function renderProjects() {
   const list = $('projects-list'); list.replaceChildren();
   const entries = projectIndex().filter(entry => localStorage.getItem(storedProjectKey(entry.id)));
   for (const entry of entries) {
     const row = document.createElement('article'); row.className = 'project-row'; row.dataset.projectId = entry.id; row.classList.toggle('active', entry.id === project.id);
     const details = document.createElement('div'); details.className = 'project-row-details';
-    const name = document.createElement('strong'); name.textContent = entry.name || 'Untitled project';
+    const label = entry.name || 'Untitled project';
+    const name = document.createElement('strong'); name.textContent = label;
     const meta = document.createElement('small'); meta.textContent = `${entry.clipCount || 0} clip${entry.clipCount === 1 ? '' : 's'} · ${entry.mediaCount || 0} media · ${new Date(entry.updatedAt || Date.now()).toLocaleString()}`;
     details.append(name, meta);
-    const action = document.createElement('button'); action.className = entry.id === project.id ? 'mini' : 'secondary'; action.textContent = entry.id === project.id ? 'Current' : 'Open'; action.disabled = entry.id === project.id; action.setAttribute('aria-label', `Open project ${entry.name || 'Untitled project'}`); action.onclick = () => openStoredProject(entry.id);
-    row.append(details, action); list.append(row);
+    const actions = document.createElement('div'); actions.className = 'project-row-actions';
+    const action = document.createElement('button'); action.type = 'button'; action.className = `project-open ${entry.id === project.id ? 'mini' : 'secondary'}`; action.textContent = entry.id === project.id ? 'Current' : 'Open'; action.disabled = entry.id === project.id; action.setAttribute('aria-label', `Open project ${label}`); action.onclick = () => openStoredProject(entry.id);
+    const confirming = confirmingDeleteProjectId === entry.id;
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = `mini project-delete${confirming ? ' confirming' : ''}`; remove.textContent = confirming ? 'Confirm' : 'Delete'; remove.setAttribute('aria-label', `${confirming ? 'Confirm delete' : 'Delete'} project ${label}`);
+    remove.onclick = () => { if (!confirming) { confirmingDeleteProjectId = entry.id; renderProjects(); return; } deleteStoredProject(entry.id); };
+    actions.append(action, remove);
+    row.append(details, actions); list.append(row);
   }
   if (!entries.length) { const empty = document.createElement('p'); empty.className = 'helper'; empty.textContent = 'Your projects will appear here after you create one.'; list.append(empty); }
+}
+function deleteStoredProject(id) {
+  if (importing) return toast('Wait for the import to finish before deleting a project.');
+  confirmingDeleteProjectId = '';
+  const allEntries = projectIndex();
+  const removedName = allEntries.find(entry => entry.id === id)?.name || (id === project.id ? project.name : 'Project');
+  const entries = allEntries.filter(entry => entry.id !== id);
+  localStorage.removeItem(storedProjectKey(id));
+  localStorage.setItem(projectIndexKey, JSON.stringify(entries));
+  const keepOther = snap => { try { return JSON.parse(snap)?.id !== id; } catch { return false; } };
+  history = history.filter(keepOther); future = future.filter(keepOther); updateHistoryButtons();
+  if (id === project.id) {
+    stop(); selected = -1; history = []; future = []; updateHistoryButtons();
+    const nextEntry = entries.find(entry => localStorage.getItem(storedProjectKey(entry.id)));
+    let switched = false;
+    if (nextEntry) {
+      try {
+        const saved = JSON.parse(localStorage.getItem(storedProjectKey(nextEntry.id)));
+        if (saved?.id === nextEntry.id && Array.isArray(saved.clips) && saved.settings) {
+          project = saved;
+          project.music = (Array.isArray(project.music) ? project.music : []).filter(clip => allMedia.some(media => media.id === clip.mediaId && media.type === 'audio'));
+          project.clips = project.clips.filter(clip => allMedia.some(media => media.id === clip.mediaId && media.type !== 'audio'));
+          switched = true;
+        }
+      } catch {}
+    }
+    if (!switched) { project = defaults(); project.emptyByChoice = true; }
+    $('media-search').value = ''; video.dataset.mediaId = '';
+    restore();
+  }
+  renderProjects();
+  toast(`Deleted ${removedName}.`);
+}
+function collectReferencedMediaIds() {
+  const ids = new Set();
+  const collect = data => {
+    if (!data || typeof data !== 'object') return;
+    for (const id of data.mediaIds || []) if (typeof id === 'string') ids.add(id);
+    for (const clip of data.clips || []) if (typeof clip?.mediaId === 'string') ids.add(clip.mediaId);
+    for (const clip of data.music || []) if (typeof clip?.mediaId === 'string') ids.add(clip.mediaId);
+  };
+  collect(project);
+  for (const snapshot of [...history, ...future]) { try { collect(JSON.parse(snapshot)); } catch {} }
+  for (const entry of projectIndex()) {
+    try { collect(JSON.parse(localStorage.getItem(storedProjectKey(entry.id)))); } catch {}
+  }
+  return [...ids];
+}
+async function cleanupUnusedStorage() {
+  if (importing || cleaningStorage) return;
+  cleaningStorage = true; $('cleanup-storage').disabled = true;
+  try {
+    save();
+    const keepExportId = jobId && !$('download-export').hidden ? jobId : '';
+    const result = await api('/api/storage/cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keepMediaIds: collectReferencedMediaIds(), keepExportId }) });
+    allMedia = await api('/api/library');
+    refreshProjectLibrary();
+    if (!result.removedMedia && !result.removedExports && !result.freedBytes) toast('Storage is already clean — no unused files found.');
+    else {
+      const sizeLabel = result.freedBytes >= 1048576 ? `${(result.freedBytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(result.freedBytes / 1024))} KB`;
+      toast(`Cleaned up ${result.removedMedia} unused media file(s) and ${result.removedExports} old export(s) (${sizeLabel} freed).`);
+    }
+  } catch (error) { toast(error.message); }
+  finally { cleaningStorage = false; $('cleanup-storage').disabled = false; }
 }
 function openStoredProject(id) {
   if (importing) return toast('Wait for the import to finish before switching projects.');
@@ -464,7 +537,8 @@ function openStoredProject(id) {
     toast(existing === project.clips.length ? `Opened ${project.name}.` : `Opened ${project.name}. Missing source videos were removed.`);
   } catch (error) { toast(error.message); }
 }
-$('load-project').onclick = () => { if (importing) return toast('Wait for the import to finish before switching projects.'); save(); renderProjects(); $('projects-dialog').showModal(); };
+$('load-project').onclick = () => { if (importing) return toast('Wait for the import to finish before switching projects.'); confirmingDeleteProjectId = ''; save(); renderProjects(); $('projects-dialog').showModal(); };
+$('cleanup-storage').onclick = cleanupUnusedStorage;
 for (const id of ['close-projects', 'close-projects-bottom']) $(id).onclick = () => $('projects-dialog').close();
 $('import-project-backup').onclick = () => { $('projects-dialog').close(); $('project-input').click(); };
 $('download-project-backup').onclick = downloadProjectBackup;
@@ -494,7 +568,7 @@ async function poll() {
     const job = await api(`/api/exports/${jobId}`);
     $('export-message').textContent = job.message; $('export-progress').value = job.progress; $('export-percent').textContent = `${job.progress}%`;
     if (job.status === 'rendering') pollTimer = setTimeout(poll, 750);
-    else { exportBusy(false); if (job.status === 'complete') { $('download-export').href = `/api/exports/${job.id}/download`; $('download-export').hidden = false; $('download-credits').hidden = !job.credits; $('download-credits').href = `/api/exports/${job.id}/credits`; $('start-export').textContent = 'Export again'; toast('Your MP4 is ready to download.'); } }
+    else { exportBusy(false); if (job.status === 'complete') { $('download-export').href = FrameBackend.downloadUrl(job.id); $('download-export').hidden = false; $('download-credits').hidden = !job.credits; $('download-credits').href = job.credits ? FrameBackend.creditsUrl(job.id) : ''; $('download-credits').download = 'Frame-music-credits.txt'; $('start-export').textContent = 'Export again'; toast('Your MP4 is ready to download.'); } }
   } catch (error) { exportBusy(false); $('export-message').textContent = error.message; }
 }
 $('export-form').onsubmit = async e => {
@@ -711,8 +785,8 @@ function beginClipGesture(event, id) {
   if (event.button !== 0) return;
   const index = project.clips.findIndex(c => c.id === id); if (index === -1) return;
   event.preventDefault(); event.stopPropagation(); gestureMoved = false; stop();
-  selectedMusicId = '';
-  selected = index; renderControls();
+  selectedMusicId = ''; selectedTextId = '';
+  selected = index; showSelectedClip(); renderControls();
   const edge = event.target.closest('.trim-handle')?.dataset.edge;
   timelineGesture = { type: edge ? 'trim' : 'move', id, edge, startX: event.clientX, scrollLeft: $('timeline-scroll').scrollLeft, clip: { ...current() }, snapshot: JSON.stringify(project), target: index, pointer: event.pointerId };
   $('timeline-scroll').setPointerCapture(event.pointerId);

@@ -102,7 +102,8 @@ async function main() {
     await page.screenshot({ path: path.join(fixtures, 'music-desktop.png'), fullPage: true });
     await page.locator('#open-export').click(); await page.locator('#start-export').click();
     await page.locator('#download-export').waitFor({ state: 'visible', timeout: 90000 });
-    const download = page.waitForEvent('download'); await page.locator('#download-export').click(); await (await download).saveAs(path.join(fixtures, 'music-browser-export.mp4'));
+    await page.locator('#download-export').click();
+    const download = page.waitForEvent('download'); await page.locator('#confirm-filename').click(); await (await download).saveAs(path.join(fixtures, 'music-browser-export.mp4'));
     await page.locator('#close-export').click();
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: path.join(fixtures, 'music-mobile.png'), fullPage: true });

@@ -8,7 +8,7 @@ const { execFileSync } = require('node:child_process');
 const ffmpeg = require('ffmpeg-static');
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'frame-test-'));
 process.env.FRAME_DATA_DIR = temporary;
-const { app, probe } = require('../server');
+const { app, probe, resolveFontPath } = require('../server');
 let server, base, imported, soundtrack;
 const fixtures = path.join(__dirname, '..', 'test-results');
 before(async () => {
@@ -245,8 +245,44 @@ test('adds real catalog music once and supplies credits for the exported video',
   assert.equal(job.status, 'complete', JSON.stringify(job));
   const credits = await fetch(`${base}/api/exports/${id}/credits`); assert.equal(credits.status, 200);
   const text = await credits.text(); assert.match(text, /Kevin MacLeod/); assert.match(text, /CC BY 4.0/); assert.match(text, /Excerpt/);
+  const restoredCreditId = randomUUID();
+  fs.copyFileSync(path.join(temporary, 'exports', `${id}-credits.txt`), path.join(temporary, 'exports', `${restoredCreditId}-credits.txt`));
+  const restoredCredits = await fetch(`${base}/api/exports/${restoredCreditId}/credits`);
+  assert.equal(restoredCredits.status, 200, 'Completed music credits remain downloadable without an in-memory export job');
+  assert.match(await restoredCredits.text(), /Kevin MacLeod/);
+  const invalidCredits = await fetch(`${base}/api/exports/not-a-uuid/credits`);
+  assert.equal(invalidCredits.status, 404);
   const providers = await (await fetch(`${base}/api/audio/providers`)).json();
   assert.equal(providers.find(p => p.id === 'epidemic').canAdd, false);
   const blocked = await fetch(`${base}/api/audio/catalog/add`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'feed', id: 'unlicensed-song' }) });
   assert.equal(blocked.status, 404);
+});
+
+test('resolves cross-platform font paths and cleans up unreferenced storage safely', async () => {
+  assert.equal(resolveFontPath('darwin', {}, p => p === '/Library/Fonts/Arial.ttf'), '/Library/Fonts/Arial.ttf');
+  assert.equal(resolveFontPath('linux', {}, p => p === '/usr/share/fonts/noto/NotoSans-Regular.ttf'), '/usr/share/fonts/noto/NotoSans-Regular.ttf');
+  assert.equal(resolveFontPath('linux', { FRAME_FONT_PATH: '/custom/font.ttf' }, p => p === '/custom/font.ttf'), '/custom/font.ttf');
+  assert.equal(resolveFontPath('linux', {}, () => false), null);
+
+  const badCleanup = await fetch(`${base}/api/storage/cleanup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+  assert.equal(badCleanup.status, 400, 'Cleanup requires an explicit keepMediaIds array');
+
+  const beforeLibrary = await (await fetch(`${base}/api/library`)).json();
+  assert.ok(beforeLibrary.length > 2);
+  const keepIds = [imported[0].id, imported[1].id];
+  const keptExportId = randomUUID();
+  fs.writeFileSync(path.join(temporary, 'exports', `${keptExportId}.mp4`), 'keep');
+  const cleanupRes = await fetch(`${base}/api/storage/cleanup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keepMediaIds: keepIds, keepExportId: keptExportId })
+  });
+  assert.equal(cleanupRes.status, 200);
+  const cleanup = await cleanupRes.json();
+  assert.ok(cleanup.removedMedia >= 1, 'Unreferenced media items are removed');
+  assert.ok(cleanup.removedExports >= 1, 'Completed old exports are removed');
+  assert.ok(cleanup.freedBytes > 0);
+  assert.equal(fs.existsSync(path.join(temporary, 'exports', `${keptExportId}.mp4`)), true, 'Active export is preserved');
+  const afterLibrary = await (await fetch(`${base}/api/library`)).json();
+  assert.deepEqual(afterLibrary.map(item => item.id).sort(), [...keepIds].sort());
 });

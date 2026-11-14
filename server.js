@@ -3,7 +3,7 @@ const multer = require('multer');
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 const ffmpeg = require('ffmpeg-static');
 const ffprobe = require('ffprobe-static').path;
 const cropGeometry = require('./public/crop');
@@ -128,8 +128,17 @@ async function importCatalogTrack(provider, trackId) {
   pendingCatalogImports.set(key, task);
   try { return await task; } finally { pendingCatalogImports.delete(key); }
 }
+let activeImports = 0;
+const trackImport = (req, res, next) => {
+  activeImports++;
+  let released = false;
+  const release = () => { if (!released) { released = true; activeImports--; } };
+  res.on('finish', release);
+  res.on('close', release);
+  next();
+};
 app.post('/api/audio/catalog/add', catalogRoute(async (req, res) => res.json(await importCatalogTrack(req.body.provider, req.body.id))));
-app.post('/api/audio/import', upload.array('audio', 20), async (req, res, next) => {
+app.post('/api/audio/import', trackImport, upload.array('audio', 20), async (req, res, next) => {
   const imported = [], errors = [];
   try {
     for (const file of req.files || []) {
@@ -152,7 +161,7 @@ app.post('/api/audio/import', upload.array('audio', 20), async (req, res, next) 
     res.json({ imported, errors });
   } catch (error) { next(error); }
 });
-app.post('/api/import', upload.array('videos', 20), async (req, res, next) => {
+app.post('/api/import', trackImport, upload.array('videos', 20), async (req, res, next) => {
   const imported = [], errors = [];
   try {
     for (const file of req.files || []) {
@@ -238,6 +247,37 @@ function dimensions(media, settings) {
   const even = v => Math.max(2, Math.round(v / 2) * 2);
   return ratio >= 1 ? [even(shortEdge * ratio), even(shortEdge)] : [even(shortEdge), even(shortEdge / ratio)];
 }
+const exportIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+let cachedSystemFont;
+function resolveFontPath(platform = process.platform, env = process.env, exists = fs.existsSync) {
+  if (env.FRAME_FONT_PATH && exists(env.FRAME_FONT_PATH)) return env.FRAME_FONT_PATH;
+  const candidates = platform === 'win32'
+    ? ['C:/Windows/Fonts/arial.ttf', 'C:/Windows/Fonts/segoeui.ttf', 'C:/Windows/Fonts/calibri.ttf']
+    : platform === 'darwin'
+      ? ['/System/Library/Fonts/Supplemental/Arial.ttf', '/Library/Fonts/Arial.ttf', '/System/Library/Fonts/Helvetica.ttc', '/System/Library/Fonts/SFNS.ttf']
+      : [
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+        '/usr/share/fonts/TTF/DejaVuSans.ttf',
+        '/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf',
+        '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+        '/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf',
+        '/usr/share/fonts/noto/NotoSans-Regular.ttf',
+        '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf',
+        '/usr/share/fonts/truetype/freefont/FreeSans.ttf'
+      ];
+  const found = candidates.find(candidate => exists(candidate));
+  if (found) return found;
+  if (platform === process.platform && exists === fs.existsSync) {
+    if (cachedSystemFont === undefined) {
+      try {
+        const matched = execFileSync('fc-match', ['-f', '%{file}', 'sans-serif'], { encoding: 'utf8', windowsHide: true, timeout: 3000 }).trim();
+        cachedSystemFont = matched && fs.existsSync(matched) ? matched : null;
+      } catch { cachedSystemFont = null; }
+    }
+    return cachedSystemFont;
+  }
+  return null;
+}
 async function render(job, project) {
   const work = path.join(root, 'temp', job.id);
   fs.mkdirSync(work, { recursive: true });
@@ -246,11 +286,20 @@ async function render(job, project) {
   const [w, h] = dimensions(canvasClip.crop, settings);
   const fps = settings.fps === 'source' ? Math.min(60, Math.max(1, canvasClip.media.fps)) : Number(settings.fps);
   job.width = w; job.height = h;
-  const font = process.platform === 'win32' ? 'C:/Windows/Fonts/arial.ttf' : '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
   const total = clips.reduce((sum, c, index) => sum + (c.end - c.start) / c.speed - overlap(clips, index, settings.transitionDuration), 0);
+  const clipTotal = clips.reduce((sum, c) => sum + (c.end - c.start) / c.speed, 0);
   const timedText = [...textClips, ...(settings.text ? [{ text: settings.text, at: 0, duration: total }] : [])].filter(clip => clip.text && clip.at < total);
-  let completed = 0;
-  const run = (args, duration, progressWeight = 1) => new Promise((resolve, reject) => {
+  const audible = music.filter(c => c.at < total && c.volume > 0);
+  const hasTransitions = clips.length > 1 && clips.some((_, index) => overlap(clips, index, settings.transitionDuration) > 0);
+  const hasText = timedText.length > 0;
+  const hasMusic = audible.length > 0;
+  const needsVideoPass2 = hasTransitions || hasText;
+  const needsAudioPass2 = hasTransitions || hasMusic;
+  const singlePassDirect = clips.length === 1 && !needsVideoPass2 && !needsAudioPass2;
+  const clipExt = (needsVideoPass2 || needsAudioPass2) ? 'mov' : 'mp4';
+  const step1Budget = needsVideoPass2 ? 45 : 95;
+  const output = path.join(root, 'exports', `${job.id}.mp4`);
+  const run = (args, duration, startPct = 0, spanPct = 0) => new Promise((resolve, reject) => {
     if (job.status === 'cancelled') return reject(new Error('Export cancelled'));
     const child = spawn(ffmpeg, ['-hide_banner', '-y', '-progress', 'pipe:1', '-nostats', ...args], { cwd: work, windowsHide: true });
     job.process = child;
@@ -260,83 +309,115 @@ async function render(job, project) {
       const lines = pending.split('\n'); pending = lines.pop();
       for (const line of lines) if (line.startsWith('out_time_us=')) {
         const seconds = Number(line.split('=')[1]) / 1000000;
-        if (Number.isFinite(seconds)) job.progress = Math.min(98, Math.round(95 * (completed + Math.min(seconds, duration) * progressWeight) / total));
+        if (Number.isFinite(seconds) && spanPct > 0 && duration > 0) {
+          const ratio = Math.min(1, Math.max(0, seconds / duration));
+          job.progress = Math.min(98, Math.max(job.progress, Math.round(startPct + ratio * spanPct)));
+        }
       }
     });
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-6000); });
     child.on('error', reject);
     child.on('close', code => { job.process = null; code === 0 ? resolve() : reject(new Error(stderr || 'Export failed')); });
   });
+  const prepareTextFilters = inputLabel => {
+    const font = resolveFontPath();
+    let fontOption = 'font=Sans';
+    if (font) {
+      const localFont = `font${path.extname(font) || '.ttf'}`;
+      fs.copyFileSync(font, path.join(work, localFont));
+      fontOption = `fontfile=${localFont}`;
+    }
+    const filters = [];
+    timedText.forEach((clip, index) => {
+      fs.writeFileSync(path.join(work, `text-${index}.txt`), textLayout.wrap(clip.text, w / h, clip.size ?? 0.045));
+      const input = index ? `t${index - 1}` : inputLabel;
+      const end = Math.min(total, clip.at + clip.duration);
+      const x = clip.x ?? 0.5, y = clip.y ?? 0.88, size = clip.size ?? 0.045;
+      filters.push(`[${input}]drawtext=${fontOption}:textfile=text-${index}.txt:expansion=none:fontcolor=white:fontsize=${Math.round(h * size)}:line_spacing=${Math.round(h * size * textLayout.lineSpacing)}:text_align=C:box=1:boxcolor=black@0.5:boxborderw=${Math.round(h * textLayout.boxPadding)}:x=w*${x}-text_w/2:y=h*${y}-text_h/2:enable='between(t,${clip.at},${end})'[t${index}]`);
+    });
+    return { filters, outputLabel: `t${timedText.length - 1}` };
+  };
   try {
+    let completed = 0;
     for (let i = 0; i < clips.length; i++) {
       const c = clips[i];
       const duration = (c.end - c.start) / c.speed;
       job.message = `Rendering clip ${i + 1} of ${clips.length}`;
       const args = ['-ss', String(c.start), '-t', String(c.end - c.start), '-i', path.join(root, 'media', c.media.id)];
       if (!c.media.audio) args.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo');
-      let vf = `setpts=(PTS-STARTPTS)/${c.speed},crop=${c.crop.width}:${c.crop.height}:${c.crop.x}:${c.crop.y}:exact=1,scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,eq=brightness=${c.brightness}:contrast=${c.contrast}:saturation=${c.saturation},fps=${fps},format=yuv420p`;
+      const vf = `setpts=(PTS-STARTPTS)/${c.speed},crop=${c.crop.width}:${c.crop.height}:${c.crop.x}:${c.crop.y}:exact=1,scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,eq=brightness=${c.brightness}:contrast=${c.contrast}:saturation=${c.saturation},fps=${fps},format=yuv420p`;
       // Keep each tempo stage at or below 2x to avoid FFmpeg's sample-skipping mode.
       let tempo = c.speed; const tempoFilters = [];
       while (tempo > 2) { tempoFilters.push('atempo=2'); tempo /= 2; }
       tempoFilters.push(`atempo=${tempo}`);
       const af = `asetpts=PTS-STARTPTS,${tempoFilters.join(',')},volume=${c.volume},aresample=48000,aformat=channel_layouts=stereo,apad`;
-      args.push('-map', '0:v:0', '-map', c.media.audio ? '0:a:0' : '1:a:0', '-vf', vf, '-af', af, '-t', String(duration), '-c:v', 'libx264', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-video_track_timescale', '90000', `${i}.mp4`);
-      await run(args, duration);
+      const videoCodec = needsVideoPass2 ? ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '0'] : ['-c:v', 'libx264', '-preset', 'medium', '-crf', settings.quality];
+      const audioCodec = needsAudioPass2 ? ['-c:a', 'pcm_s16le'] : ['-c:a', 'aac', '-b:a', '192k'];
+      const clipTarget = singlePassDirect ? output : `${i}.${clipExt}`;
+      args.push('-map', '0:v:0', '-map', c.media.audio ? '0:a:0' : '1:a:0', '-vf', vf, '-af', af, '-t', String(duration), ...videoCodec, ...audioCodec, '-ar', '48000', '-ac', '2', '-video_track_timescale', '90000', ...(singlePassDirect ? ['-movflags', '+faststart'] : []), clipTarget);
+      const startPct = clipTotal > 0 ? step1Budget * (completed / clipTotal) : 0;
+      const spanPct = clipTotal > 0 ? step1Budget * (duration / clipTotal) : step1Budget;
+      await run(args, duration, startPct, spanPct);
       completed += duration;
     }
-    job.message = 'Finishing your MP4'; job.progress = 96;
-    const output = path.join(root, 'exports', `${job.id}.mp4`);
-    const audible = music.filter(c => c.at < total && c.volume > 0);
-    const joined = audible.length || timedText.length ? 'joined.mp4' : output;
-    if (clips.length > 1 && clips.some((_, index) => overlap(clips, index, settings.transitionDuration) > 0)) {
-      const args = clips.flatMap((_, index) => ['-i', `${index}.mp4`]);
-      const filters = clips.map((_, index) => `[${index}:v]settb=AVTB,setpts=PTS-STARTPTS[base${index}]`);
-      let elapsed = (clips[0].end - clips[0].start) / clips[0].speed;
-      for (let index = 1; index < clips.length; index++) {
-        const duration = overlap(clips, index - 1, settings.transitionDuration);
-        const offset = Math.max(0, elapsed - duration);
-        const v = index === 1 ? 'base0' : `v${index - 1}`, a = index === 1 ? '0:a' : `a${index - 1}`;
-        if (duration) {
-          filters.push(`[${v}][base${index}]xfade=transition=fade:duration=${duration}:offset=${offset}[v${index}]`);
-          filters.push(`[${a}][${index}:a]acrossfade=d=${duration}:c1=tri:c2=tri[a${index}]`);
-        } else {
-          filters.push(`[${v}][base${index}]concat=n=2:v=1:a=0[v${index}]`);
-          filters.push(`[${a}][${index}:a]concat=n=2:v=0:a=1[a${index}]`);
+    if (!singlePassDirect) {
+      let stage2Out;
+      if (hasTransitions) {
+        job.message = hasText ? 'Joining clips and adding timed text' : 'Finishing your MP4';
+        const args = clips.flatMap((_, index) => ['-i', `${index}.${clipExt}`]);
+        const filters = clips.map((_, index) => `[${index}:v]settb=AVTB,setpts=PTS-STARTPTS[base${index}]`);
+        let elapsed = (clips[0].end - clips[0].start) / clips[0].speed;
+        for (let index = 1; index < clips.length; index++) {
+          const duration = overlap(clips, index - 1, settings.transitionDuration);
+          const offset = Math.max(0, elapsed - duration);
+          const v = index === 1 ? 'base0' : `v${index - 1}`, a = index === 1 ? '0:a' : `a${index - 1}`;
+          if (duration) {
+            filters.push(`[${v}][base${index}]xfade=transition=fade:duration=${duration}:offset=${offset}[v${index}]`);
+            filters.push(`[${a}][${index}:a]acrossfade=d=${duration}:c1=tri:c2=tri[a${index}]`);
+          } else {
+            filters.push(`[${v}][base${index}]concat=n=2:v=1:a=0[v${index}]`);
+            filters.push(`[${a}][${index}:a]concat=n=2:v=0:a=1[a${index}]`);
+          }
+          elapsed += (clips[index].end - clips[index].start) / clips[index].speed - duration;
         }
-        elapsed += (clips[index].end - clips[index].start) / clips[index].speed - duration;
+        let finalVideo = `v${clips.length - 1}`;
+        if (hasText) {
+          const textGraph = prepareTextFilters(finalVideo);
+          filters.push(...textGraph.filters);
+          finalVideo = textGraph.outputLabel;
+        }
+        stage2Out = hasMusic ? 'stage2.mov' : output;
+        const audioCodec = hasMusic ? ['-c:a', 'pcm_s16le'] : ['-c:a', 'aac', '-b:a', '192k'];
+        args.push('-filter_complex', filters.join(';'), '-map', `[${finalVideo}]`, '-map', `[a${clips.length - 1}]`, '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', settings.quality, ...audioCodec, '-video_track_timescale', '90000', ...(hasMusic ? [] : ['-movflags', '+faststart']), stage2Out);
+        await run(args, total, step1Budget, 95 - step1Budget);
+      } else {
+        let concatOut = `0.${clipExt}`;
+        if (clips.length > 1) {
+          job.message = 'Finishing your MP4';
+          fs.writeFileSync(path.join(work, 'clips.txt'), clips.map((_, i) => `file '${i}.${clipExt}'`).join('\n'));
+          concatOut = (!hasText && !hasMusic) ? output : `joined.${clipExt}`;
+          await run(['-f', 'concat', '-safe', '0', '-i', 'clips.txt', '-c', 'copy', ...((!hasText && !hasMusic) ? ['-movflags', '+faststart'] : []), concatOut], total);
+        }
+        stage2Out = concatOut;
+        if (hasText) {
+          job.message = 'Adding timed text';
+          const textGraph = prepareTextFilters('0:v');
+          stage2Out = hasMusic ? 'stage2.mov' : output;
+          await run(['-i', concatOut, '-filter_complex', textGraph.filters.join(';'), '-map', `[${textGraph.outputLabel}]`, '-map', '0:a:0', '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'copy', '-video_track_timescale', '90000', ...(hasMusic ? [] : ['-movflags', '+faststart']), stage2Out], total, step1Budget, 95 - step1Budget);
+        }
       }
-      args.push('-filter_complex', filters.join(';'), '-map', `[v${clips.length - 1}]`, '-map', `[a${clips.length - 1}]`, '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', joined);
-      await run(args, total, 0);
-    } else {
-      fs.writeFileSync(path.join(work, 'clips.txt'), clips.map((_, i) => `file '${i}.mp4'`).join('\n'));
-      await run(['-f', 'concat', '-safe', '0', '-i', 'clips.txt', '-c', 'copy', '-movflags', '+faststart', joined], total, 0);
-    }
-    let videoWithText = joined;
-    if (timedText.length) {
-      job.message = 'Adding timed text';
-      fs.copyFileSync(font, path.join(work, 'font.ttf'));
-      const filters = [];
-      timedText.forEach((clip, index) => {
-        fs.writeFileSync(path.join(work, `text-${index}.txt`), textLayout.wrap(clip.text, w / h, clip.size ?? 0.045));
-        const input = index ? `t${index - 1}` : '0:v';
-        const end = Math.min(total, clip.at + clip.duration);
-        const x = clip.x ?? 0.5, y = clip.y ?? 0.88, size = clip.size ?? 0.045;
-        filters.push(`[${input}]drawtext=fontfile=font.ttf:textfile=text-${index}.txt:expansion=none:fontcolor=white:fontsize=${Math.round(h * size)}:line_spacing=${Math.round(h * size * textLayout.lineSpacing)}:text_align=C:box=1:boxcolor=black@0.5:boxborderw=${Math.round(h * textLayout.boxPadding)}:x=w*${x}-text_w/2:y=h*${y}-text_h/2:enable='between(t,${clip.at},${end})'[t${index}]`);
-      });
-      videoWithText = audible.length ? 'titled.mp4' : output;
-      await run(['-i', joined, '-filter_complex', filters.join(';'), '-map', `[t${timedText.length - 1}]`, '-map', '0:a:0', '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'copy', '-movflags', '+faststart', videoWithText], total, 0);
-    }
-    if (audible.length) {
-      job.message = 'Mixing music and original sound';
-      const args = ['-i', videoWithText];
-      const filters = ['[0:a]aresample=48000,aformat=channel_layouts=stereo,apad[original]'];
-      audible.forEach((c, index) => {
-        args.push('-ss', String(c.start), '-t', String(Math.min(c.end - c.start, total - c.at)), '-i', path.join(root, 'media', c.media.id));
-        filters.push(`[${index + 1}:a:0]asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,volume=${c.volume},adelay=${Math.round(c.at * 48000)}S:all=1[m${index}]`);
-      });
-      filters.push(`[original]${audible.map((_, i) => `[m${i}]`).join('')}amix=inputs=${audible.length + 1}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=0:latency=1[mix]`);
-      args.push('-filter_complex', filters.join(';'), '-map', '0:v:0', '-map', '[mix]', '-t', String(total), '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', output);
-      await run(args, total, 0);
+      if (hasMusic) {
+        job.message = 'Mixing music and original sound'; job.progress = Math.max(job.progress, 96);
+        const args = ['-i', stage2Out];
+        const filters = ['[0:a]aresample=48000,aformat=channel_layouts=stereo,apad[original]'];
+        audible.forEach((c, index) => {
+          args.push('-ss', String(c.start), '-t', String(Math.min(c.end - c.start, total - c.at)), '-i', path.join(root, 'media', c.media.id));
+          filters.push(`[${index + 1}:a:0]asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,volume=${c.volume},adelay=${Math.round(c.at * 48000)}S:all=1[m${index}]`);
+        });
+        filters.push(`[original]${audible.map((_, i) => `[m${i}]`).join('')}amix=inputs=${audible.length + 1}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=0:latency=1[mix]`);
+        args.push('-filter_complex', filters.join(';'), '-map', '0:v:0', '-map', '[mix]', '-t', String(total), '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', output);
+        await run(args, total, 96, 2);
+      }
     }
     if (job.status !== 'cancelled') {
       const outputInfo = await probe(output);
@@ -354,13 +435,74 @@ async function render(job, project) {
     if (job.status !== 'cancelled') { job.status = 'error'; job.message = error.status ? error.message : 'Export failed. Try a lower resolution or re-import the source clip.'; console.error(error.message); }
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
-    if (job.status !== 'complete') fs.rmSync(path.join(root, 'exports', `${job.id}.mp4`), { force: true });
+    if (job.status !== 'complete') {
+      fs.rmSync(path.join(root, 'exports', `${job.id}.mp4`), { force: true });
+      fs.rmSync(path.join(root, 'exports', `${job.id}-credits.txt`), { force: true });
+    }
   }
 }
+app.post('/api/storage/cleanup', (req, res) => {
+  if ([...jobs.values()].some(j => j.status === 'rendering') || activeImports > 0 || pendingCatalogImports.size > 0 || blackGeneration) {
+    return res.status(409).json({ error: 'Wait for current imports or exports to finish before cleaning up storage.' });
+  }
+  if (!Array.isArray(req.body?.keepMediaIds) || req.body.keepMediaIds.some(id => typeof id !== 'string')) {
+    return res.status(400).json({ error: 'Provide the list of active project media IDs.' });
+  }
+  const keepMedia = new Set(req.body.keepMediaIds);
+  const keepExportId = typeof req.body.keepExportId === 'string' && exportIdPattern.test(req.body.keepExportId) ? req.body.keepExportId : '';
+  const cleanExports = req.body.cleanExports !== false;
+  let removedMedia = 0, removedExports = 0, freedBytes = 0;
+  const removeFile = filePath => {
+    try {
+      if (fs.existsSync(filePath)) {
+        freedBytes += fs.statSync(filePath).size;
+        fs.rmSync(filePath, { force: true });
+        return true;
+      }
+    } catch {}
+    return false;
+  };
+  const retained = [];
+  for (const item of library) {
+    if (keepMedia.has(item.id)) retained.push(item);
+    else {
+      removedMedia++;
+      const base = path.join(root, 'media', item.id);
+      removeFile(base); removeFile(`${base}.jpg`); removeFile(`${base}.m4a`);
+    }
+  }
+  library = retained;
+  fs.writeFileSync(manifest, JSON.stringify(library, null, 2));
+  const validMediaFiles = new Set();
+  for (const item of library) {
+    validMediaFiles.add(item.id);
+    validMediaFiles.add(`${item.id}.jpg`);
+    validMediaFiles.add(`${item.id}.m4a`);
+  }
+  for (const entry of fs.readdirSync(path.join(root, 'media'))) {
+    if (!validMediaFiles.has(entry)) removeFile(path.join(root, 'media', entry));
+  }
+  if (cleanExports) {
+    const keepExportFiles = keepExportId ? new Set([`${keepExportId}.mp4`, `${keepExportId}-credits.txt`]) : new Set();
+    for (const entry of fs.readdirSync(path.join(root, 'exports'))) {
+      if (keepExportFiles.has(entry)) continue;
+      if (removeFile(path.join(root, 'exports', entry)) && entry.endsWith('.mp4')) removedExports++;
+    }
+    for (const id of jobs.keys()) {
+      if (id !== keepExportId) jobs.delete(id);
+    }
+  }
+  res.json({ removedMedia, removedExports, freedBytes });
+});
 app.post('/api/exports', (req, res) => {
   try {
     if ([...jobs.values()].some(j => j.status === 'rendering')) return res.status(409).json({ error: 'An export is already running. Wait for it to finish or cancel it.' });
     const project = validateProject(req.body);
+    if (jobs.size >= 50) {
+      for (const [oldId, oldJob] of jobs) {
+        if (oldJob.status !== 'rendering') { jobs.delete(oldId); if (jobs.size < 50) break; }
+      }
+    }
     const job = { id: randomUUID(), status: 'rendering', progress: 0, message: 'Preparing your video' };
     jobs.set(job.id, job);
     render(job, project).catch(error => { job.status = 'error'; job.message = error.message; });
@@ -380,17 +522,21 @@ app.delete('/api/exports/:id', (req, res) => {
 });
 app.get('/api/exports/:id/download', (req, res) => {
   const id = req.params.id;
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return res.sendStatus(404);
+  if (!exportIdPattern.test(id)) return res.sendStatus(404);
   if (jobs.has(id) && jobs.get(id).status !== 'complete') return res.sendStatus(404);
   const file = path.join(root, 'exports', `${id}.mp4`);
   if (!fs.existsSync(file)) return res.sendStatus(404);
   res.download(file, exportName.filename(req.query.name));
 });
 app.get('/api/exports/:id/credits', (req, res) => {
-  if (jobs.get(req.params.id)?.status !== 'complete' || !jobs.get(req.params.id)?.credits) return res.sendStatus(404);
-  res.download(path.join(root, 'exports', `${req.params.id}-credits.txt`), 'Frame-music-credits.txt');
+  const id = req.params.id;
+  if (!exportIdPattern.test(id)) return res.sendStatus(404);
+  if (jobs.has(id) && (jobs.get(id).status !== 'complete' || !jobs.get(id).credits)) return res.sendStatus(404);
+  const file = path.join(root, 'exports', `${id}-credits.txt`);
+  if (!fs.existsSync(file)) return res.sendStatus(404);
+  res.download(file, 'Frame-music-credits.txt');
 });
 app.use((error, req, res, next) => { console.error(error.message); res.status(400).json({ error: error.code === 'LIMIT_FILE_SIZE' ? 'Please import videos smaller than 8 GB.' : 'Could not complete this request. Please try again.' }); });
 const port = Number(process.env.PORT || 4317);
 if (require.main === module) app.listen(port, '127.0.0.1', () => console.log(`Frame is ready at http://127.0.0.1:${port}`));
-module.exports = { app, validateProject, dimensions, probe };
+module.exports = { app, validateProject, dimensions, probe, resolveFontPath };

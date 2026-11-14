@@ -1,8 +1,20 @@
-# Frame — local video studio
+# Frame — video editing studio
 
-Double-click **Start Frame.cmd** in this folder to open the editor in your browser. Node.js is required and is already installed on this computer. The first installation needs internet access to download FFmpeg. After that, editing works offline.
+Frame runs in two interchangeable modes from the same frontend:
 
-Alternatively, run `npm install` once, then `npm start`, and open http://127.0.0.1:4317. The server only listens on this computer. **Stop Frame.cmd** stops the server started by the launcher (finish your export first). For a terminal-started server, press Ctrl+C in that terminal.
+1. **Local Desktop Studio (Node.js + native FFmpeg):** Double-click **Start Frame.cmd** in this folder to open the editor in your browser, or run `npm install --prefer-offline` once and `npm start`, then open http://127.0.0.1:4317. The server only listens on this computer and supports files up to 8 GB with native hardware-speed FFmpeg rendering. **Stop Frame.cmd** stops the server started by the launcher (finish your export first).
+2. **Static Web Studio (GitHub Pages / Browser Workspace):** Frame also deploys as a 100% static web app (e.g. `https://bookofharry.github.io/frame-studio/`) with zero backend required. When hosted statically (or opened with `?mode=browser`), Frame automatically switches to **Browser Workspace** mode—storing imported videos, audio, and projects locally inside your browser's IndexedDB (`frame-studio-browser-db`) and rendering H.264 MP4 exports in-browser via WebAssembly (`ffmpeg.wasm`).
+
+## Deploying to GitHub Pages
+
+This repository includes an automated GitHub Actions workflow ([.github/workflows/deploy-pages.yml](.github/workflows/deploy-pages.yml)) and static builder ([scripts/build-pages.js](scripts/build-pages.js)):
+
+1. Push your changes to the `main` branch on GitHub (`origin`).
+2. In your GitHub repository, open **Settings → Pages**, and under **Build and deployment → Source**, choose **GitHub Actions**.
+3. The **Deploy Frame Studio to GitHub Pages** workflow runs `npm test`, bundles `public/`, `hls.js`, generated black-screen media, and same-origin `ffmpeg.wasm` assets into `dist/`, and publishes the live editor at `https://<your-username>.github.io/<repo-name>/`.
+4. To build or verify the static GitHub Pages bundle locally, run `npm run build:pages` and `npm run test:pages`.
+
+> **Browser Workspace notes:** In the hosted GitHub Pages version, media stays private inside the visitor's own browser storage (up to 512 MB per video and 150 MB per audio file; 720p/1080p clips work best within WebAssembly memory limits). All 11 bundled starter tracks work out of the box, and visitors can optionally connect their own Epidemic Sound API key in their browser's IndexedDB.
 
 ## Editing a video
 
@@ -17,7 +29,7 @@ Use **+ Black screen** above the timeline to insert a silent black clip at the p
 
 Use **+ Add text** above the timeline or **Text → Add text at playhead** in the inspector. Choose a duration before adding, then edit the words, start time, and duration in the inspector. Text has its own lane below video: drag the clip to move it, or drag an edge to change when it appears. On the video preview, drag the text to position it or drag its corner handle to resize it; the inspector also has exact position and size controls. Long text wraps into the same lines in preview and export, with text size relative to the video frame. Multiple text clips can overlap; preview and export show them only within their intervals. Older full-video titles become a full-length text clip when opened.
 
-Space plays or pauses; Left/Right step through time (Shift steps ten frames). Ctrl+B splits at the playhead, Delete removes the selected clip, and Ctrl+D duplicates it. Ctrl+Z undoes; Ctrl+Shift+Z or Ctrl+Y redoes. Home/End go to the beginning/end. Projects automatically save in this browser. **Save project** saves the current edit to the local project list. **Projects** shows recent projects and lets you open one without losing the current edit. Use **Download current backup** or **Import project file** in that dialog to move a project JSON file. Existing project files remain compatible.
+Space plays or pauses; Left/Right step through time (Shift steps ten frames). Ctrl+B splits at the playhead, Delete removes the selected clip, and Ctrl+D duplicates it. Ctrl+Z undoes; Ctrl+Shift+Z or Ctrl+Y redoes. Home/End go to the beginning/end. Projects automatically save in this browser. **Save project** saves the current edit to the local project list. **Projects** shows recent projects and lets you open or delete saved edits without losing active work. Use **Download current backup**, **Import project file**, or **Clean up unused files** in that dialog to export/import project JSON backups or reclaim disk space from unreferenced media and old exports. Existing project files remain compatible.
 
 The left library stays synchronized with the timeline. Each clip row shows its edited playback duration, source in/out times, and trim/crop/color/audio/speed status. Split clips and repeated uses of a video have separate rows; click a row to select that exact timeline clip. The thumbnail duration follows the selected clip, or shows the combined duration for multiple unselected clips. Original duration remains labeled in the source details. Undo, removal, reordering, and reopening a project update these rows automatically. **Add at playhead** inserts a fresh copy of the full source video at the selected time.
 
@@ -53,7 +65,7 @@ Music edits and source references are included in automatic saving and **Save pr
 
 ## Quality and limitations
 
-- Exports use FFmpeg, browser-compatible H.264 `yuv420p` video, AAC audio, and adjustable CRF quality. Excellent uses CRF 18. Source resolution and frame rate (up to 60 fps) are the defaults. 720p, 1080p, and 4K options refer to the short edge, respecting the canvas orientation. Completed MP4 download links continue to work after restarting the local app while the export file remains in `data/exports`.
+- Exports use FFmpeg, browser-compatible H.264 `yuv420p` video, AAC audio, and adjustable CRF quality. Excellent uses CRF 18. Source resolution and frame rate (up to 60 fps) are the defaults. 720p, 1080p, and 4K options refer to the short edge, respecting the canvas orientation. Completed MP4 and music-credits download links continue to work after restarting the local app while the export files remain in `data/exports`.
 - Increasing resolution cannot recreate detail missing from a source. This version exports standard 8-bit SDR; it does not implement HDR tone mapping or professional color management.
 - Browser color/text preview is approximate. Export uses FFmpeg's color and text filters. Audio speed changes preserve pitch.
 - Browser playback depends on supported codecs. H.264 MP4 works best. FFmpeg can import/export additional formats whose browser preview may be unavailable.
