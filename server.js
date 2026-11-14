@@ -4,22 +4,22 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const ffmpegStatic = require('ffmpeg-static');
+const ffmpeg = require('ffmpeg-static');
 const ffprobe = require('ffprobe-static').path;
 
-function resolveFfmpeg() {
+function resolveDrawtextFfmpeg() {
   if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
   const hasDrawtext = bin => {
     try { return /\bdrawtext\b/.test(execFileSync(bin, ['-hide_banner', '-filters'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); }
     catch { return false; }
   };
-  if (ffmpegStatic && hasDrawtext(ffmpegStatic)) return ffmpegStatic;
+  if (ffmpeg && hasDrawtext(ffmpeg)) return ffmpeg;
   if (hasDrawtext('ffmpeg')) return 'ffmpeg';
-  return ffmpegStatic || 'ffmpeg';
+  return ffmpeg || 'ffmpeg';
 }
-const ffmpeg = resolveFfmpeg();
+const drawtextFfmpeg = resolveDrawtextFfmpeg();
 const supportsDrawtextAlign = (() => {
-  try { return /\btext_align\b/.test(execFileSync(ffmpeg, ['-hide_banner', '-h', 'filter=drawtext'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); }
+  try { return /\btext_align\b/.test(execFileSync(drawtextFfmpeg, ['-hide_banner', '-h', 'filter=drawtext'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); }
   catch { return false; }
 })();
 const cropGeometry = require('./public/crop');
@@ -272,11 +272,12 @@ function resolveFontPath(platform = process.platform, env = process.env, exists 
     : platform === 'darwin'
       ? ['/System/Library/Fonts/Supplemental/Arial.ttf', '/Library/Fonts/Arial.ttf', '/System/Library/Fonts/Helvetica.ttc', '/System/Library/Fonts/SFNS.ttf']
       : [
+        '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+        '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf',
+        '/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf',
         '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
         '/usr/share/fonts/TTF/DejaVuSans.ttf',
         '/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-        '/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf',
         '/usr/share/fonts/noto/NotoSans-Regular.ttf',
         '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf',
         '/usr/share/fonts/truetype/freefont/FreeSans.ttf'
@@ -315,9 +316,9 @@ async function render(job, project) {
   const clipExt = (needsVideoPass2 || needsAudioPass2) ? 'mov' : 'mp4';
   const step1Budget = needsVideoPass2 ? 45 : 95;
   const output = path.join(root, 'exports', `${job.id}.mp4`);
-  const run = (args, duration, startPct = 0, spanPct = 0) => new Promise((resolve, reject) => {
+  const run = (args, duration, startPct = 0, spanPct = 0, binary = ffmpeg) => new Promise((resolve, reject) => {
     if (job.status === 'cancelled') return reject(new Error('Export cancelled'));
-    const child = spawn(ffmpeg, ['-nostdin', '-hide_banner', '-y', '-progress', 'pipe:1', '-nostats', ...args], { cwd: work, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(binary, ['-nostdin', '-hide_banner', '-y', '-progress', 'pipe:1', '-nostats', ...args], { cwd: work, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     job.process = child;
     let stderr = '', pending = '';
     child.stdout.on('data', chunk => {
@@ -406,7 +407,7 @@ async function render(job, project) {
         stage2Out = hasMusic ? 'stage2.mov' : output;
         const audioCodec = hasMusic ? ['-c:a', 'pcm_s16le'] : ['-c:a', 'aac', '-b:a', '192k'];
         args.push('-filter_complex', filters.join(';'), '-map', `[${finalVideo}]`, '-map', `[a${clips.length - 1}]`, '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', settings.quality, ...audioCodec, '-video_track_timescale', '90000', ...(hasMusic ? [] : ['-movflags', '+faststart']), stage2Out);
-        await run(args, total, step1Budget, 95 - step1Budget);
+        await run(args, total, step1Budget, 95 - step1Budget, hasText ? drawtextFfmpeg : ffmpeg);
       } else {
         let concatOut = `0.${clipExt}`;
         if (clips.length > 1) {
@@ -420,7 +421,7 @@ async function render(job, project) {
           job.message = 'Adding timed text';
           const textGraph = prepareTextFilters('0:v');
           stage2Out = hasMusic ? 'stage2.mov' : output;
-          await run(['-i', concatOut, '-filter_complex', textGraph.filters.join(';'), '-map', `[${textGraph.outputLabel}]`, '-map', '0:a:0', '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'copy', '-video_track_timescale', '90000', ...(hasMusic ? [] : ['-movflags', '+faststart']), stage2Out], total, step1Budget, 95 - step1Budget);
+          await run(['-i', concatOut, '-filter_complex', textGraph.filters.join(';'), '-map', `[${textGraph.outputLabel}]`, '-map', '0:a:0', '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', settings.quality, '-c:a', 'copy', '-video_track_timescale', '90000', ...(hasMusic ? [] : ['-movflags', '+faststart']), stage2Out], total, step1Budget, 95 - step1Budget, drawtextFfmpeg);
         }
       }
       if (hasMusic) {
