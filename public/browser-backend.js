@@ -831,7 +831,7 @@
         if (hasTransitions) {
           job.message = hasText ? 'Joining clips and adding timed text' : 'Finishing your MP4';
           const args = clips.flatMap((_, idx) => ['-i', `clip-${idx}.mp4`]);
-          const filters = clips.map((_, idx) => `[${idx}:v]fps=${fps},settb=AVTB,setpts=PTS-STARTPTS[base${idx}]`);
+          const filters = clips.map((_, idx) => `[${idx}:v]setpts=PTS-STARTPTS,fps=${fps}[base${idx}]`);
           let elapsed = (clips[0].end - clips[0].start) / clips[0].speed;
           for (let idx = 1; idx < clips.length; idx++) {
             const dur = computeOverlap(clips, idx - 1, settings.transitionDuration);
@@ -839,10 +839,10 @@
             const v = idx === 1 ? 'base0' : `v${idx - 1}`;
             const a = idx === 1 ? '0:a' : `a${idx - 1}`;
             if (dur) {
-              filters.push(`[${v}][base${idx}]xfade=transition=fade:duration=${dur}:offset=${off},fps=${fps},settb=AVTB[v${idx}]`);
+              filters.push(`[${v}][base${idx}]xfade=transition=fade:duration=${dur}:offset=${off}[v${idx}]`);
               filters.push(`[${a}][${idx}:a]acrossfade=d=${dur}:c1=tri:c2=tri[a${idx}]`);
             } else {
-              filters.push(`[${v}][base${idx}]concat=n=2:v=1:a=0,fps=${fps},settb=AVTB[v${idx}]`);
+              filters.push(`[${v}][base${idx}]concat=n=2:v=1:a=0,fps=${fps}[v${idx}]`);
               filters.push(`[${a}][${idx}:a]concat=n=2:v=0:a=1[a${idx}]`);
             }
             elapsed += (clips[idx].end - clips[idx].start) / clips[idx].speed - dur;

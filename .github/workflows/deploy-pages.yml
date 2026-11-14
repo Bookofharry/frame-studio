@@ -27,6 +27,9 @@ jobs:
           node-version: "22"
           cache: "npm"
 
+      - name: Install system FFmpeg with drawtext for backend verification
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Install dependencies
         run: npm ci --prefer-offline
 
