@@ -961,6 +961,58 @@ $('timeline-scroll').addEventListener('drop', event => {
   addClip(media, at);
 });
 new ResizeObserver(() => { applyPreview(); if (!timelineGesture) renderTimeline(); }).observe($('preview-stage'));
+function setupWorkspaceSplitter() {
+  const splitter = $('workspace-splitter');
+  const workspace = document.querySelector('.workspace');
+  if (!splitter || !workspace) return;
+  const clampHeight = value => {
+    const max = Math.max(180, workspace.clientHeight - 190);
+    return Math.round(Math.max(160, Math.min(max, value)));
+  };
+  const applyHeight = (value, persist = false) => {
+    const height = clampHeight(value);
+    workspace.style.setProperty('--timeline-height', `${height}px`);
+    if (persist) { try { localStorage.setItem('frame-timeline-height', String(height)); } catch {} }
+  };
+  try {
+    const saved = Number(localStorage.getItem('frame-timeline-height'));
+    if (Number.isFinite(saved) && saved > 0) applyHeight(saved);
+  } catch {}
+  let drag = null;
+  splitter.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    const timeline = document.querySelector('.timeline');
+    drag = { id: event.pointerId, startY: event.clientY, startHeight: timeline ? timeline.getBoundingClientRect().height : 275 };
+    splitter.classList.add('dragging');
+    splitter.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  splitter.addEventListener('pointermove', event => {
+    if (!drag || event.pointerId !== drag.id) return;
+    applyHeight(drag.startHeight + (drag.startY - event.clientY));
+  });
+  const endDrag = event => {
+    if (!drag || event.pointerId !== drag.id) return;
+    applyHeight(drag.startHeight + (drag.startY - event.clientY), true);
+    splitter.classList.remove('dragging');
+    if (splitter.hasPointerCapture(event.pointerId)) splitter.releasePointerCapture(event.pointerId);
+    drag = null;
+  };
+  splitter.addEventListener('pointerup', endDrag);
+  splitter.addEventListener('pointercancel', endDrag);
+  splitter.addEventListener('dblclick', () => {
+    workspace.style.removeProperty('--timeline-height');
+    try { localStorage.removeItem('frame-timeline-height'); } catch {}
+  });
+  splitter.addEventListener('keydown', event => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    const timeline = document.querySelector('.timeline');
+    const current = timeline ? timeline.getBoundingClientRect().height : 275;
+    applyHeight(current + (event.key === 'ArrowUp' ? 24 : -24), true);
+  });
+}
+setupWorkspaceSplitter();
 setupMusic();
 setupText();
 setupExportFolders();
