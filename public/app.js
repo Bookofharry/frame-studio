@@ -849,10 +849,28 @@ document.querySelectorAll('[data-workspace]').forEach(button => button.onclick =
   if (button.dataset.workspace === 'media') $('media-search').focus();
   else { setInspector(button.dataset.workspace); document.querySelector('.inspector').scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
 });
+function updateLibraryScrollControls() {
+  const controls = $('library-scroll-controls');
+  if (!controls) return;
+  const visibleCards = [...$('library').children].filter(card => !card.hidden).length;
+  controls.hidden = library.length <= 1 || visibleCards <= 1;
+}
+function scrollMediaLibrary(direction) {
+  const container = $('library');
+  if (!container) return;
+  const style = getComputedStyle(container);
+  const isHorizontal = style.display === 'flex' && style.flexDirection === 'row';
+  const step = Math.max(120, Math.round((isHorizontal ? container.clientWidth : container.clientHeight) * 0.7));
+  if (isHorizontal) container.scrollBy({ left: direction * step, behavior: 'auto' });
+  else container.scrollBy({ top: direction * step, behavior: 'auto' });
+}
+$('library-scroll-up').onclick = () => scrollMediaLibrary(-1);
+$('library-scroll-down').onclick = () => scrollMediaLibrary(1);
 function filterLibrary() {
   const query = $('media-search').value.trim().toLowerCase(); let found = 0;
   for (const card of $('library').children) { const media = library.find(m => m.id === card.dataset.mediaId); card.hidden = !media?.name.toLowerCase().includes(query); if (!card.hidden) found++; }
   $('media-search-empty').hidden = !query || found > 0;
+  updateLibraryScrollControls();
 }
 $('media-search').oninput = filterLibrary;
 $('fullscreen').onclick = async () => { try { if (document.fullscreenElement) await document.exitFullscreen(); else await $('preview-stage').requestFullscreen(); } catch { toast('Fullscreen is unavailable in this browser.'); } };
