@@ -6,7 +6,7 @@ const cropFor = clip => clip.crop || FrameCrop.full(mediaFor(clip));
 const defaults = () => ({ id: crypto.randomUUID(), name: 'Untitled project', mediaIds: [], clips: [], music: [], textClips: [], settings: { aspect: 'source', text: '', resolution: 'source', fps: 'source', quality: '18', transitionDuration: 0.35 } });
 let project = defaults(), library = [], allMedia = [], selected = -1, history = [], future = [], playing = false, importing = false, jobId = null, pollTimer, toastTimer;
 let pixelsPerSecond = 60, timelineGesture = null, gestureMoved = false, previewFrame = 0;
-let previewGeneration = 0, pendingSeek = null;
+let previewGeneration = 0, previewTimer = null, pendingSeek = null;
 try { const saved = JSON.parse(localStorage.getItem('frame-project')); if (saved?.clips && saved?.settings) project = saved; } catch {}
 project.id ||= crypto.randomUUID();
 const projectIndexKey = 'frame-project-index';
@@ -217,7 +217,7 @@ function renderTimeline() {
   renderText();
   updateTime();
 }
-function stop() { playing = false; previewGeneration++; cancelAnimationFrame(previewFrame); video.pause(); preloadVideo.pause(); pauseMusic(); stopCatalogPreview(); $('play').textContent = '▶'; $('play').setAttribute('aria-label', 'Play timeline'); }
+function stop() { playing = false; previewGeneration++; cancelAnimationFrame(previewFrame); clearInterval(previewTimer); previewTimer = null; video.pause(); preloadVideo.pause(); pauseMusic(); stopCatalogPreview(); $('play').textContent = '▶'; $('play').setAttribute('aria-label', 'Play timeline'); }
 function preloadFollowing(index) {
   const media = mediaFor(project.clips[index + 1]);
   if (!media) { preloadVideo.pause(); preloadVideo.removeAttribute('src'); preloadVideo.dataset.mediaId = ''; $('next-viewport').style.opacity = 0; return; }
@@ -336,11 +336,37 @@ function nextClip() {
   } else { selectClip(nextIndex, next.start + transitionLength(nextIndex - 1) * next.speed, true); renderTimeline(); }
 }
 function checkClipEnd() { const clip = current(); if (playing && clip && !video.seeking && video.dataset.mediaId === clip.mediaId && video.currentTime >= clip.end - 0.015) nextClip(); }
+function startPreviewLoop() {
+  cancelAnimationFrame(previewFrame);
+  clearInterval(previewTimer);
+  previewTimer = null;
+  const generation = ++previewGeneration;
+  const tick = () => {
+    if (generation !== previewGeneration || !playing || video.paused) return;
+    updateTime();
+    checkClipEnd();
+    if (document.hidden) {
+      if (!previewTimer) previewTimer = setInterval(() => {
+        if (generation !== previewGeneration || !playing || video.paused) { clearInterval(previewTimer); previewTimer = null; return; }
+        updateTime();
+        checkClipEnd();
+      }, 50);
+    } else {
+      previewFrame = requestAnimationFrame(tick);
+    }
+  };
+  tick();
+}
+document.addEventListener('visibilitychange', () => {
+  if (!playing) return;
+  if (!document.hidden && video.paused) video.play().catch(() => {});
+  startPreviewLoop();
+});
 for (const player of [video, preloadVideo]) {
   player.addEventListener('timeupdate', () => { if (player === video) { updateTime(); checkClipEnd(); } });
   player.addEventListener('ended', () => { if (player === video) checkClipEnd(); });
   player.addEventListener('error', () => { if (player === video && video.getAttribute('src')) { stop(); toast('Browser preview unavailable for this codec. Use an H.264 MP4 for preview; FFmpeg can still export this file.'); } });
-  player.addEventListener('play', () => { if (player !== video) return; cancelAnimationFrame(previewFrame); const generation = ++previewGeneration; const tick = () => { if (generation !== previewGeneration || !playing || video.paused) return; updateTime(); checkClipEnd(); previewFrame = requestAnimationFrame(tick); }; tick(); });
+  player.addEventListener('play', () => { if (player === video) startPreviewLoop(); });
 }
 $('play').onclick = () => {
   if (!current()) return;
