@@ -622,7 +622,7 @@
     const settings = body.settings || {};
     const resolution = ['source', '720', '1080', '2160'].includes(settings.resolution) ? settings.resolution : 'source';
     const aspect = ['source', '16:9', '9:16', '1:1'].includes(settings.aspect) ? settings.aspect : 'source';
-    const quality = ['18', '20', '23'].includes(String(settings.quality)) ? String(settings.quality) : '18';
+    const quality = ['18', '20', '23'].includes(String(settings.quality)) ? String(settings.quality) : '20';
     const fps = ['source', '24', '30', '60'].includes(String(settings.fps)) ? String(settings.fps) : 'source';
     const text = String(settings.text || '').slice(0, 120);
     const transitionDuration = checkedNumber(settings.transitionDuration, 0.35, 0, 1.5);

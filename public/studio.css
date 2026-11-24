@@ -101,8 +101,24 @@ dialog{width:min(500px,calc(100% - 24px));background:#20252b;color:var(--text);b
 .export-pill{font-size:9px;padding:4px 8px;border-radius:999px;background:#232b33;border:1px solid #34414d;color:#b8c8d4;font-variant-numeric:tabular-nums;white-space:nowrap}
 .export-pill.accent{background:#153633;border-color:#2e6f67;color:#9af2e4}
 #export-dialog .modal-description{margin:8px 0 16px;font-size:11px;line-height:1.55}
-#export-dialog .export-fields{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-#export-dialog .export-fields select{font-size:11px;padding:8px 7px;background:#14191e;border-color:#313d47}
+#export-dialog .export-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+#export-dialog .export-field{min-width:0}
+#export-dialog .export-field label{display:block;font-size:11px;font-weight:600;color:#c7d6df;margin-bottom:8px}
+#export-dialog .export-field select{appearance:none;color-scheme:dark;width:100%;min-height:46px;margin:0;padding:12px 34px 12px 13px;font-family:inherit;font-size:12px;font-weight:500;color:#edf6f5;background:#111a20 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238fa9b6' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 12px center;border:1px solid #3b4b55;border-radius:8px;box-shadow:inset 0 1px 0 #ffffff05;cursor:pointer;transition:border-color .15s,box-shadow .15s}
+#export-dialog .export-field select:hover:not(:disabled){border-color:#6a8f95}
+#export-dialog .export-field select:focus-visible{outline:2px solid #60e2d0;outline-offset:3px;border-color:#60e2d0}
+#export-dialog .export-field select:disabled{opacity:.55;cursor:wait}
+#export-dialog .export-field select option{background:#172127;color:#edf6f5}
+.export-field-help{font-size:10px;line-height:1.5;color:#93aab7;margin:8px 0 0}
+.export-advanced{margin-top:16px;border-top:1px solid #31414b;border-bottom:1px solid #31414b}
+.export-advanced summary{display:flex;align-items:center;gap:10px;list-style:none;cursor:pointer;padding:13px 0;font-size:11px;color:#c7d6df}
+.export-advanced summary::-webkit-details-marker{display:none}
+.export-advanced summary::after{content:'+';font-size:16px;color:#8fa9b6;width:12px;text-align:center}
+.export-advanced[open] summary::after{content:'−'}
+.export-advanced summary:focus-visible{outline:2px solid #60e2d0;outline-offset:3px;border-radius:3px}
+.export-advanced-value{margin-left:auto;font-size:10px;color:#8fa9b6;font-variant-numeric:tabular-nums}
+.export-advanced-content{padding:2px 0 14px}
+.export-advanced-content .helper{margin:12px 0 0}
 .export-credit-callout{padding:9px 11px;border-radius:6px;background:#292419;border:1px solid #695732;color:#ebd6a7}
 .export-status-card{margin-top:16px;padding:14px 15px;border-radius:8px;background:linear-gradient(180deg,#131b20,#0f1519);border:1px solid #2f4650;box-shadow:inset 0 1px 0 #ffffff0a}
 .export-status-card[data-state="rendering"]{border-color:#357d75;box-shadow:0 0 0 1px #43d9c518,0 10px 28px #0006}

@@ -3,7 +3,7 @@ let video = $('video'), preloadVideo = $('video-preload');
 const nextViewport = document.createElement('div'); nextViewport.id = 'next-viewport';
 $('video-frame').insertBefore(nextViewport, $('title-preview')); nextViewport.append(preloadVideo);
 const cropFor = clip => clip.crop || FrameCrop.full(mediaFor(clip));
-const defaults = () => ({ id: crypto.randomUUID(), name: 'Untitled project', mediaIds: [], clips: [], music: [], textClips: [], settings: { aspect: 'source', text: '', resolution: 'source', fps: 'source', quality: '18', transitionDuration: 0.35 } });
+const defaults = () => ({ id: crypto.randomUUID(), name: 'Untitled project', mediaIds: [], clips: [], music: [], textClips: [], settings: { aspect: 'source', text: '', resolution: 'source', fps: 'source', quality: '20', transitionDuration: 0.35 } });
 let project = defaults(), library = [], allMedia = [], selected = -1, history = [], future = [], playing = false, importing = false, jobId = null, pollTimer, toastTimer;
 let pixelsPerSecond = 60, timelineGesture = null, gestureMoved = false, previewFrame = 0;
 let previewGeneration = 0, previewTimer = null, pendingSeek = null;
@@ -678,6 +678,30 @@ function updateExportEstimate() {
   const { media, crop } = exportSource();
   const settings = { ...project.settings, resolution: $('resolution').value, fps: $('fps').value };
   const output = FrameExportSettings.output(crop, media.fps, settings);
+  const sourceOutput = FrameExportSettings.output(crop, media.fps, { ...settings, resolution: 'source' });
+  for (const option of $('resolution').options) {
+    if (option.value === 'source') continue;
+    const candidate = FrameExportSettings.output(crop, media.fps, { ...settings, resolution: option.value });
+    const upscaled = candidate.width > sourceOutput.width || candidate.height > sourceOutput.height;
+    option.textContent = `${option.value === '2160' ? '4K' : `${option.value}p`}${upscaled ? ' · upscale' : ''}`;
+  }
+  const upscaled = output.width > sourceOutput.width || output.height > sourceOutput.height;
+  $('export-resolution-help').textContent = `${output.width} × ${output.height} pixels${upscaled ? ' · Upscaling adds pixels, not detail.' : ' · Uses your canvas proportions.'}`;
+  $('export-quality-help').textContent = {
+    18: 'Less compression; usually larger files.',
+    20: 'Recommended balance of detail and file size.',
+    23: 'More compression; usually smaller files.'
+  }[$('quality').value];
+  const automatic = $('fps').value === 'source';
+  const assumedFps = FrameBackend.isBrowserMode() && media.generated !== 'black';
+  const sourceFps = Number(Math.min(60, Math.max(1, media.fps || 30)).toFixed(3));
+  $('fps').querySelector('[value="source"]').textContent = `${assumedFps ? 'Automatic' : media.fps > 60 ? 'Source capped' : 'Match source'} · ${sourceFps} fps`;
+  $('export-fps-summary').textContent = `${Number(output.fps.toFixed(3))} fps${automatic ? ' · automatic' : ''}`;
+  $('export-fps-help').textContent = assumedFps && automatic
+    ? `Source frame rate is not detected in browser mode. Automatic exports at ${sourceFps} fps.`
+    : automatic
+      ? 'Uses the first video’s frame rate, capped at 60 fps.'
+      : 'Converts to this frame rate. A higher rate does not add captured motion.';
   const estimate = FrameExportSettings.estimate(output, total(), $('quality').value, FrameBackend.isBrowserMode());
   $('export-size-estimate').textContent = `Estimated file size: ${FrameExportSettings.sizeRange(estimate)}`;
 }
@@ -695,12 +719,6 @@ $('open-export').onclick = () => {
   $('export-description').textContent = project.clips.length === 1
     ? 'Export your clip as an MP4 video.'
     : 'Join your timeline clips in order into one MP4 video.';
-  const { media: source, crop } = exportSource();
-  const { width, height } = FrameExportSettings.output(crop, source.fps, { ...project.settings, resolution: 'source', fps: 'source' });
-  $('resolution').querySelector('[value="source"]').textContent = `Original · ${width} × ${height}`;
-  const sourceFps = source.fps || 30;
-  const fps = Number(Math.min(60, Math.max(1, sourceFps)).toFixed(3));
-  $('fps').querySelector('[value="source"]').textContent = `${sourceFps > 60 ? 'Source capped' : 'Match source'} · ${fps} fps`;
   updateExportEstimate();
   $('export-dialog').showModal();
 };

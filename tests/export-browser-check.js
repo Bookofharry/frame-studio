@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 
 async function main() {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'frame-export-check-'));
@@ -23,25 +23,37 @@ async function main() {
     await page.locator('#file-input').setInputFiles(path.join(__dirname, '../test-results/sample-with-audio.mp4'));
     await page.locator('.timeline-clip').waitFor();
     await page.locator('#open-export').click();
+    assert.equal(await page.locator('#quality').inputValue(), '20', 'New projects default to Balanced');
+    assert.equal(await page.locator('#fps').isVisible(), false, 'Frame rate starts under Advanced');
+    assert.match(await page.locator('#export-fps-summary').textContent(), /24 fps/, 'Native source FPS is measured');
     const originalEstimate = await page.locator('#export-size-estimate').textContent();
     await page.locator('#resolution').selectOption('2160');
     assert.notEqual(await page.locator('#export-size-estimate').textContent(), originalEstimate);
     const largeEstimate = await page.locator('#export-size-estimate').textContent();
     await page.locator('#quality').selectOption('23');
     assert.notEqual(await page.locator('#export-size-estimate').textContent(), largeEstimate);
+    assert.match(await page.locator('#export-resolution-help').textContent(), /Upscaling/, 'Larger resolutions do not promise recovered detail');
+    await page.locator('#export-advanced summary').click();
     await page.locator('#fps').selectOption('60');
     await page.locator('#start-export').click();
     await page.locator('#cancel-export').click();
     await page.waitForFunction(() => document.getElementById('export-status').dataset.state === 'cancelled');
     assert.equal(await page.locator('#download-export').isVisible(), false);
     assert.equal(await page.locator('#resolution').isEnabled(), true);
-    await page.locator('#resolution').selectOption('source');
-    await page.locator('#fps').selectOption('source');
+    await page.locator('#resolution').selectOption('720');
+    await page.locator('#fps').selectOption('30');
     await page.locator('#start-export').click();
     await page.locator('#download-export').waitFor({ timeout: 30000 });
     const downloaded = await page.request.get(new URL(await page.locator('#download-export').getAttribute('href'), page.url()).href);
     assert.equal(downloaded.status(), 200);
     assert.ok((await downloaded.body()).length > 1000, 'Retry produces a real MP4');
+    const mp4 = path.join(temporary, 'settings-check.mp4');
+    fs.writeFileSync(mp4, await downloaded.body());
+    const metadata = JSON.parse(execFileSync(require('ffprobe-static').path, ['-v', 'error', '-show_streams', '-of', 'json', mp4], { windowsHide: true, encoding: 'utf8' }));
+    const video = metadata.streams.find(stream => stream.codec_type === 'video');
+    assert.equal(video.width, 1280); assert.equal(video.height, 720);
+    assert.equal(video.avg_frame_rate, '30/1', 'Selected FPS is used in the actual MP4');
+    assert.match((await downloaded.body()).toString('latin1'), /crf=23\.0/, 'Selected quality reaches the real H.264 encoder');
     console.log('PASS: live estimate, native cancellation and successful retry/download');
 
     // Simulate remote timing and failures at the backend boundary; the real UI,
@@ -144,7 +156,7 @@ async function main() {
       window.encoderCheck = { hold: true, terminated: 0 };
       window.FFmpegWASM = { FFmpeg: class {
         on() {} async load() {} async writeFile() {} async deleteFile() {}
-        async exec() { return 0; }
+        async exec(args) { window.encoderCheck.args = args; return 0; }
         async readFile() {
           if (window.encoderCheck.hold) await new Promise(resolve => { window.encoderCheck.release = resolve; });
           return new Uint8Array([0, 0, 0, 24]);
@@ -165,6 +177,12 @@ async function main() {
       };
     });
     await browserPage.locator('#open-export').click();
+    await browserPage.locator('#export-advanced summary').click();
+    assert.match(await browserPage.locator('#fps option:checked').textContent(), /Automatic/, 'Browser fallback is not labelled as measured source FPS');
+    assert.match(await browserPage.locator('#export-fps-help').textContent(), /not detected/);
+    await browserPage.locator('#resolution').selectOption('720');
+    await browserPage.locator('#fps').selectOption('24');
+    await browserPage.locator('#quality').selectOption('23');
     await browserPage.locator('#start-export').click();
     await browserPage.waitForFunction(() => !!window.encoderCheck?.release);
     await browserPage.locator('#cancel-export').click();
@@ -176,6 +194,9 @@ async function main() {
     assert.equal(await browserPage.locator('#download-export').isVisible(), false);
     await browserPage.locator('#start-export').click();
     await browserPage.locator('#download-export').waitFor();
+    const args = await browserPage.evaluate(() => window.encoderCheck.args);
+    assert.equal(args[args.indexOf('-crf') + 1], '23');
+    assert.match(args[args.indexOf('-vf') + 1], /scale=1280:720.*fps=24/, 'Browser renderer applies resolution and FPS');
     await browserPage.close();
     console.log('PASS: browser packaging cancellation stays cancelled and releases the encoder for retry');
     assert.deepEqual(errors, [], 'No uncaught browser errors');
