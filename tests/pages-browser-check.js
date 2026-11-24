@@ -73,9 +73,7 @@ function startPagesSubpathServer(distDir) {
     const rel = pathname.slice('/frame-studio/'.length) || 'index.html';
     const target = path.resolve(distDir, rel);
     if (!target.startsWith(path.resolve(distDir)) || !fs.existsSync(target) || fs.statSync(target).isDirectory()) {
-      if (!pathname.startsWith('/frame-studio/api/capabilities')) {
-        unexpected404s.push(pathname);
-      }
+      unexpected404s.push(pathname);
       res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end('<!doctype html><title>GitHub Pages 404</title><h1>File not found</h1>');
       return;
@@ -120,6 +118,8 @@ async function main() {
 
   execFileSync(process.execPath, [path.join(root, 'scripts/build-pages.js')], { cwd: root, stdio: 'inherit' });
   assert.equal(fs.existsSync(path.join(distDir, '.nojekyll')), true, 'dist/.nojekyll generated');
+  assert.match(fs.readFileSync(path.join(distDir, 'index.html'), 'utf8'), /data-frame-mode="browser"/, 'Static build selects browser mode explicitly');
+  assert.doesNotMatch(fs.readFileSync(path.join(root, 'public/index.html'), 'utf8'), /data-frame-mode="browser"/, 'Local server keeps capability detection');
   assert.equal(fs.existsSync(path.join(distDir, 'vendor/hls.min.js')), true, 'dist/vendor/hls.min.js bundled');
   assert.equal(fs.existsSync(path.join(distDir, 'assets/black-screen.mp4')), true, 'dist/assets/black-screen.mp4 generated');
 

@@ -7,8 +7,15 @@ const root = path.join(__dirname, '..');
 const publicDir = path.join(root, 'public');
 const distDir = path.join(root, 'dist');
 
+if (path.dirname(distDir) !== root || path.basename(distDir) !== 'dist') throw new Error('Invalid build output directory');
 fs.rmSync(distDir, { recursive: true, force: true });
 fs.cpSync(publicDir, distDir, { recursive: true });
+
+// Static hosting has no local API. Select the browser renderer without a
+// capabilities probe that would otherwise produce a 404 on every page load.
+const indexFile = path.join(distDir, 'index.html');
+const indexHtml = fs.readFileSync(indexFile, 'utf8');
+fs.writeFileSync(indexFile, indexHtml.replace('<html lang="en">', '<html lang="en" data-frame-mode="browser">'));
 
 const vendorDir = path.join(distDir, 'vendor');
 fs.mkdirSync(vendorDir, { recursive: true });

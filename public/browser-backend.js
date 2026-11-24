@@ -115,7 +115,7 @@
     modePromise = (async () => {
       try {
         const params = new URLSearchParams(global.location?.search || '');
-        if (params.get('mode') === 'browser') {
+        if (params.get('mode') === 'browser' || document.documentElement.dataset.frameMode === 'browser') {
           mode = 'browser';
           applyBrowserWorkspaceBranding();
           return mode;
