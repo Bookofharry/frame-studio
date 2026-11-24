@@ -280,13 +280,13 @@ async function main() {
     assert.equal(await editedCard.locator('.library-clip-range').first().textContent(), 'In 00:00.25 → Out 00:01.45');
     assert.ok((await page.locator('#crop-summary').textContent()).includes('360 × 360'), 'Crop survives project save, open and reload');
     await page.locator('#open-export').click();
-    assert.ok((await page.locator('#export-description').textContent()).includes('3 clips'));
+    assert.equal(await page.locator('#export-pill-clips').textContent(), '3 clips');
     await page.route('**/api/capabilities', route => route.fulfill({ status: 404, body: 'Old server' }));
     await page.locator('#start-export').click();
     await page.waitForFunction(() => /Restart Frame Studio/.test(document.getElementById('export-message').textContent));
     assert.match(await page.locator('#export-message').textContent(), /Restart Frame Studio/, 'Old servers cannot silently drop text during export');
     await page.unroute('**/api/capabilities');
-    await page.locator('#resolution').selectOption('720'); await page.locator('#start-export').click();
+    await page.locator('#resolution-picker').click(); await page.locator('#resolution-menu [data-value="720"]').click(); await page.locator('#start-export').click();
     await page.waitForFunction(() => !document.getElementById('download-export').hidden || /failed|error/i.test(document.getElementById('export-message').textContent), { timeout: 90000 });
     assert.equal(await page.locator('#download-export').isVisible(), true, serverErrors.join('').slice(-6000));
     await page.locator('#download-export').click();

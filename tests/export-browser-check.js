@@ -5,6 +5,11 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 
+async function chooseExport(page, id, value) {
+  await page.locator('#' + id + '-picker').click();
+  await page.locator('#' + id + '-menu [data-value="' + value + '"]').click();
+}
+
 async function main() {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'frame-export-check-'));
   let server, browser;
@@ -24,24 +29,43 @@ async function main() {
     await page.locator('.timeline-clip').waitFor();
     await page.locator('#open-export').click();
     assert.equal(await page.locator('#quality').inputValue(), '20', 'New projects default to Balanced');
-    assert.equal(await page.locator('#fps').isVisible(), false, 'Frame rate starts under Advanced');
+    await page.locator('#quality-picker').focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#quality-picker').getAttribute('aria-expanded'), 'true');
+    await page.keyboard.press('End');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#quality').inputValue(), '20', 'Escape dismisses without changing quality');
+    assert.equal(await page.locator('#export-dialog').evaluate(el => el.open), true, 'Escape dismisses the menu, not the dialog');
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('h');
+    await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#quality').inputValue(), '18', 'Type-ahead and Enter commit the matching option');
+    await chooseExport(page, 'quality', '20');
+    await page.locator('#quality-picker').click();
+    await page.keyboard.press('Tab');
+    assert.equal(await page.locator('#quality-picker').getAttribute('aria-expanded'), 'false', 'Tab leaves the menu normally');
+    await page.locator('#quality-picker').click();
+    await page.locator('#export-description').click();
+    assert.equal(await page.locator('#quality-picker').getAttribute('aria-expanded'), 'false', 'Clicking outside dismisses the menu');
+    assert.equal(await page.locator('#fps-picker').isVisible(), false, 'Frame rate starts under Advanced');
     assert.match(await page.locator('#export-fps-summary').textContent(), /24 fps/, 'Native source FPS is measured');
     const originalEstimate = await page.locator('#export-size-estimate').textContent();
-    await page.locator('#resolution').selectOption('2160');
+    await chooseExport(page, 'resolution', '2160');
     assert.notEqual(await page.locator('#export-size-estimate').textContent(), originalEstimate);
     const largeEstimate = await page.locator('#export-size-estimate').textContent();
-    await page.locator('#quality').selectOption('23');
+    await chooseExport(page, 'quality', '23');
     assert.notEqual(await page.locator('#export-size-estimate').textContent(), largeEstimate);
     assert.match(await page.locator('#export-resolution-help').textContent(), /Upscaling/, 'Larger resolutions do not promise recovered detail');
     await page.locator('#export-advanced summary').click();
-    await page.locator('#fps').selectOption('60');
+    await chooseExport(page, 'fps', '60');
     await page.locator('#start-export').click();
+    assert.equal(await page.locator('#quality-picker').isDisabled(), true, 'Visible picker locks during rendering');
     await page.locator('#cancel-export').click();
     await page.waitForFunction(() => document.getElementById('export-status').dataset.state === 'cancelled');
     assert.equal(await page.locator('#download-export').isVisible(), false);
     assert.equal(await page.locator('#resolution').isEnabled(), true);
-    await page.locator('#resolution').selectOption('720');
-    await page.locator('#fps').selectOption('30');
+    await chooseExport(page, 'resolution', '720');
+    await chooseExport(page, 'fps', '30');
     await page.locator('#start-export').click();
     await page.locator('#download-export').waitFor({ timeout: 30000 });
     const downloaded = await page.request.get(new URL(await page.locator('#download-export').getAttribute('href'), page.url()).href);
@@ -180,9 +204,9 @@ async function main() {
     await browserPage.locator('#export-advanced summary').click();
     assert.match(await browserPage.locator('#fps option:checked').textContent(), /Automatic/, 'Browser fallback is not labelled as measured source FPS');
     assert.match(await browserPage.locator('#export-fps-help').textContent(), /not detected/);
-    await browserPage.locator('#resolution').selectOption('720');
-    await browserPage.locator('#fps').selectOption('24');
-    await browserPage.locator('#quality').selectOption('23');
+    await chooseExport(browserPage, 'resolution', '720');
+    await chooseExport(browserPage, 'fps', '24');
+    await chooseExport(browserPage, 'quality', '23');
     await browserPage.locator('#start-export').click();
     await browserPage.waitForFunction(() => !!window.encoderCheck?.release);
     await browserPage.locator('#cancel-export').click();

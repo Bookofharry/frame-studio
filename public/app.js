@@ -680,10 +680,15 @@ function updateExportEstimate() {
   const output = FrameExportSettings.output(crop, media.fps, settings);
   const sourceOutput = FrameExportSettings.output(crop, media.fps, { ...settings, resolution: 'source' });
   for (const option of $('resolution').options) {
-    if (option.value === 'source') continue;
+    if (option.value === 'source') {
+      option.dataset.detail = `${sourceOutput.width} × ${sourceOutput.height} · Keep your canvas dimensions`;
+      option.dataset.badge = 'Canvas';
+      continue;
+    }
     const candidate = FrameExportSettings.output(crop, media.fps, { ...settings, resolution: option.value });
     const upscaled = candidate.width > sourceOutput.width || candidate.height > sourceOutput.height;
     option.textContent = `${option.value === '2160' ? '4K' : `${option.value}p`}${upscaled ? ' · upscale' : ''}`;
+    option.dataset.detail = `${candidate.width} × ${candidate.height} · ${upscaled ? 'Adds pixels, not source detail' : option.value === '720' ? 'Compact HD output' : option.value === '1080' ? 'Full HD output' : 'Ultra HD output'}`;
   }
   const upscaled = output.width > sourceOutput.width || output.height > sourceOutput.height;
   $('export-resolution-help').textContent = `${output.width} × ${output.height} pixels${upscaled ? ' · Upscaling adds pixels, not detail.' : ' · Uses your canvas proportions.'}`;
@@ -704,6 +709,9 @@ function updateExportEstimate() {
       : 'Converts to this frame rate. A higher rate does not add captured motion.';
   const estimate = FrameExportSettings.estimate(output, total(), $('quality').value, FrameBackend.isBrowserMode());
   $('export-size-estimate').textContent = `Estimated file size: ${FrameExportSettings.sizeRange(estimate)}`;
+  const fpsOption = $('fps').querySelector('[value="source"]');
+  fpsOption.dataset.detail = assumedFps ? `${sourceFps} fps fallback · Source rate is not detected` : 'Use source timing, up to 60 fps';
+  FrameExportSelect.refresh();
 }
 for (const key of ['resolution', 'fps', 'quality']) $(key).addEventListener('change', updateExportEstimate);
 $('open-export').onclick = () => {
@@ -726,6 +734,7 @@ $('close-export').onclick = () => $('export-dialog').close();
 function exportBusy(busy) {
   exportInFlight = busy;
   for (const key of ['resolution', 'fps', 'quality']) $(key).disabled = busy;
+  FrameExportSelect.refresh();
   $('start-export').hidden = busy;
   $('cancel-export').hidden = !busy;
   $('cancel-export').disabled = cancelRequested;
