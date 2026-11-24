@@ -835,6 +835,7 @@
     let ffmpeg;
     let activeStage = { duration: 1, startPct: 0, spanPct: 0, label: '' };
     const reportEncodeTime = rawSeconds => {
+      if (job.status !== 'rendering') return;
       if (!Number.isFinite(rawSeconds) || rawSeconds < 0 || activeStage.duration <= 0) return;
       const clamped = Math.min(activeStage.duration, rawSeconds);
       if (activeStage.spanPct > 0) {
@@ -1053,10 +1054,12 @@
         job.message = 'Packaging MP4 file…';
         job.detail = 'Finalizing fast-start MP4 download…';
         const outputData = await ffmpeg.readFile('out.mp4');
+        if (job.status === 'cancelled') return;
         const mp4Blob = new Blob([outputData.slice().buffer], { type: 'video/mp4' });
-        job.downloadUrl = URL.createObjectURL(mp4Blob);
         const epidemicIds = [...new Set(audible.filter(c => c.media.catalog?.provider === 'epidemic').map(c => c.media.catalog.trackId))];
         if (epidemicIds.length) await reportEpidemic('tracksExported', epidemicIds).catch(() => {});
+        if (job.status === 'cancelled') return;
+        job.downloadUrl = URL.createObjectURL(mp4Blob);
         job.credits = buildCredits(audible);
         if (job.credits) {
           job.creditsUrl = URL.createObjectURL(new Blob([job.credits], { type: 'text/plain;charset=utf-8' }));
@@ -1208,7 +1211,7 @@
     const relativeUrl = url.startsWith('/') ? `.${url}` : url;
     const response = await fetch(relativeUrl, options);
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Something went wrong. Please try again.');
+    if (!response.ok) throw makeError(result.error || 'Something went wrong. Please try again.', response.status);
     return result;
   }
 

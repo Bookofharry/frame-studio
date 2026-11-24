@@ -326,6 +326,7 @@ async function render(job, project) {
     job.process = child;
     let stderr = '', pending = '';
     child.stdout.on('data', chunk => {
+      if (job.status !== 'rendering') return;
       pending += chunk;
       const lines = pending.split('\n'); pending = lines.pop();
       for (const line of lines) if (line.startsWith('out_time_us=')) {
@@ -455,13 +456,18 @@ async function render(job, project) {
       }
     }
     if (job.status !== 'cancelled') {
+      job.stage = 'compose'; job.progress = 99;
+      job.message = 'Checking your MP4';
+      job.detail = 'Verifying video and audio before making your download available.';
       const outputInfo = await probe(output);
+      if (job.status === 'cancelled') return;
       const videoStream = outputInfo.streams.find(stream => stream.codec_type === 'video');
       if (videoStream?.codec_name !== 'h264' || videoStream.pix_fmt !== 'yuv420p' || !outputInfo.streams.some(stream => stream.codec_type === 'audio' && stream.codec_name === 'aac')) {
         throw Object.assign(new Error('Export did not produce a browser-compatible H.264/AAC MP4. Please try exporting again.'), { status: 422 });
       }
       const used = music.filter(c => c.at < total && c.volume > 0);
       await catalog.exported(used);
+      if (job.status === 'cancelled') return;
       job.credits = catalog.credits(used);
       if (job.credits) fs.writeFileSync(path.join(root, 'exports', `${job.id}-credits.txt`), job.credits);
       const sizeMb = (fs.statSync(output).size / 1048576).toFixed(1);

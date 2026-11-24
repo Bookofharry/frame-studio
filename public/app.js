@@ -587,6 +587,8 @@ $('project-input').onchange = async e => {
 $('new-project').onclick = () => { $('new-project-name').value = `Untitled project ${projectIndex().length + 1}`; $('new-dialog').showModal(); }; $('keep-project').onclick = () => $('new-dialog').close();
 $('confirm-new').onclick = () => { if (importing) return toast('Wait for the import to finish before starting a new project.'); remember(); save(); project = defaults(); project.name = $('new-project-name').value.trim() || 'Untitled project'; selected = -1; $('media-search').value = ''; video.dataset.mediaId = ''; restore(); $('new-dialog').close(); };
 let exportStartedAt = 0, exportClockTimer = null;
+let exportInFlight = false, cancelRequested = false, pollVersion = 0, pollFailures = 0;
+let lastExportJob = null, lastRenderStage = 'engine';
 function formatElapsedClock(ms) {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
   const mins = Math.floor(totalSec / 60);
@@ -604,10 +606,10 @@ function startExportClock(originMs) {
   exportClockTimer = setInterval(tick, 250);
 }
 function inferExportStage(job) {
-  if (job.stage) return job.stage;
   if (job.status === 'complete') return 'complete';
   if (job.status === 'error') return 'error';
   if (job.status === 'cancelled') return 'cancelled';
+  if (job.stage) return job.stage;
   const msg = (job.message || '').toLowerCase();
   if (msg.includes('engine') || msg.includes('preparing') || msg.includes('starting')) return 'engine';
   if (msg.includes('joining') || msg.includes('finishing') || msg.includes('text') || msg.includes('mixing') || msg.includes('packaging')) return 'compose';
@@ -630,16 +632,20 @@ function updateExportCard(job) {
   };
   if ($('export-stage-label')) $('export-stage-label').textContent = stageTitles[stage] || 'FRAME STUDIO · RENDER';
   const order = ['engine', 'clips', 'compose', 'complete'];
-  const activeIdx = status === 'complete' ? 4 : Math.max(0, order.indexOf(stage === 'error' || stage === 'cancelled' ? 'clips' : stage));
+  if (status === 'rendering' && order.includes(stage)) lastRenderStage = stage;
+  const activeIdx = status === 'complete' ? 4 : Math.max(0, order.indexOf(stage === 'error' || stage === 'cancelled' ? lastRenderStage : stage));
   document.querySelectorAll('#export-steps li').forEach((li, idx) => {
     const done = status === 'complete' || idx < activeIdx;
     const active = status === 'rendering' && idx === activeIdx;
     li.classList.toggle('is-done', done);
     li.classList.toggle('is-active', active);
+    li.classList.toggle('is-failed', status === 'error' && idx === activeIdx);
+    if (active) li.setAttribute('aria-current', 'step'); else li.removeAttribute('aria-current');
     const badge = li.querySelector('span');
     if (badge) badge.textContent = done ? '✓' : String(idx + 1);
   });
   $('export-message').textContent = job.message || 'Preparing…';
+  if ($('export-status-announcement').textContent !== $('export-message').textContent) $('export-status-announcement').textContent = $('export-message').textContent;
   $('export-progress').value = pct;
   $('export-percent').textContent = `${pct}%`;
   if ($('export-meter-fill')) $('export-meter-fill').style.width = `${pct}%`;
@@ -654,6 +660,7 @@ function updateExportCard(job) {
     $('export-detail').textContent = job.detail || fallbackDetail;
   }
   if (status !== 'rendering') {
+    $('start-export').textContent = status === 'complete' ? 'Export again' : status === 'error' ? 'Retry export' : 'Export video ↓';
     stopExportClock();
     if ($('export-elapsed') && exportStartedAt) {
       const suffix = status === 'complete' ? 'total' : 'elapsed';
@@ -661,39 +668,103 @@ function updateExportCard(job) {
     }
   }
 }
+function exportSource() {
+  const clip = project.clips.find(item => mediaFor(item)?.generated !== 'black') || project.clips[0];
+  const media = mediaFor(clip);
+  return { media, crop: FrameCrop.normalize(cropFor(clip), media) };
+}
+function updateExportEstimate() {
+  if (!project.clips.length || exportInFlight) return;
+  const { media, crop } = exportSource();
+  const settings = { ...project.settings, resolution: $('resolution').value, fps: $('fps').value };
+  const output = FrameExportSettings.output(crop, media.fps, settings);
+  const estimate = FrameExportSettings.estimate(output, total(), $('quality').value, FrameBackend.isBrowserMode());
+  $('export-size-estimate').textContent = `Estimated file size: ${FrameExportSettings.sizeRange(estimate)}`;
+}
+for (const key of ['resolution', 'fps', 'quality']) $(key).addEventListener('change', updateExportEstimate);
 $('open-export').onclick = () => {
+  if (exportInFlight) { $('export-dialog').showModal(); return; }
   if (!project.clips.length) return toast('Add a video to your timeline first.');
   stop();
   const clipLabel = `${project.clips.length} clip${project.clips.length === 1 ? '' : 's'}`;
-  const durLabel = time(total());
+  const seconds = Number(total().toFixed(1));
+  const durLabel = `${seconds} second${seconds === 1 ? '' : 's'}`;
   if ($('export-pill-clips')) $('export-pill-clips').textContent = clipLabel;
-  if ($('export-pill-duration')) $('export-pill-duration').textContent = `${durLabel} total`;
+  if ($('export-pill-duration')) $('export-pill-duration').textContent = durLabel;
   $('export-credit-note').hidden = !project.music.some(c => musicSource(c)?.catalog?.attributionRequired && c.volume > 0 && c.at < total());
-  $('export-description').textContent = `${clipLabel} · ${durLabel} total. All timeline clips will be joined in order into one MP4 video.`;
+  $('export-description').textContent = project.clips.length === 1
+    ? 'Export your clip as an MP4 video.'
+    : 'Join your timeline clips in order into one MP4 video.';
+  const { media: source, crop } = exportSource();
+  const { width, height } = FrameExportSettings.output(crop, source.fps, { ...project.settings, resolution: 'source', fps: 'source' });
+  $('resolution').querySelector('[value="source"]').textContent = `Original · ${width} × ${height}`;
+  const sourceFps = source.fps || 30;
+  const fps = Number(Math.min(60, Math.max(1, sourceFps)).toFixed(3));
+  $('fps').querySelector('[value="source"]').textContent = `${sourceFps > 60 ? 'Source capped' : 'Match source'} · ${fps} fps`;
+  updateExportEstimate();
   $('export-dialog').showModal();
 };
 $('close-export').onclick = () => $('export-dialog').close();
-function exportBusy(busy) { for (const key of ['resolution', 'fps', 'quality']) $(key).disabled = busy; $('start-export').hidden = busy; $('cancel-export').hidden = !busy; }
-async function poll() {
+function exportBusy(busy) {
+  exportInFlight = busy;
+  for (const key of ['resolution', 'fps', 'quality']) $(key).disabled = busy;
+  $('start-export').hidden = busy;
+  $('cancel-export').hidden = !busy;
+  $('cancel-export').disabled = cancelRequested;
+  $('cancel-export').textContent = cancelRequested ? 'Cancelling…' : 'Cancel export';
+}
+function finishExport(job) {
+  cancelRequested = false;
+  clearTimeout(pollTimer);
+  exportBusy(false);
+  updateExportCard(job);
+  if (job.status === 'complete') {
+    $('download-export').href = FrameBackend.downloadUrl(job.id);
+    $('download-export').hidden = false;
+    $('download-credits').hidden = !job.credits;
+    $('download-credits').href = job.credits ? FrameBackend.creditsUrl(job.id) : '';
+    $('download-credits').download = 'Frame-music-credits.txt';
+    toast('Your MP4 is ready to download.');
+  }
+}
+async function poll(version = pollVersion) {
+  const id = jobId;
   try {
-    const job = await api(`/api/exports/${jobId}`);
+    const job = await api(`/api/exports/${id}`, { signal: AbortSignal.timeout(10000) });
+    if (version !== pollVersion || id !== jobId) return;
+    pollFailures = 0;
+    lastExportJob = job;
     if (job.startedAt && Math.abs(job.startedAt - exportStartedAt) > 1500 && job.status === 'rendering') exportStartedAt = job.startedAt;
-    updateExportCard(job);
-    if (job.status === 'rendering') pollTimer = setTimeout(poll, 280);
-    else { exportBusy(false); if (job.status === 'complete') { $('download-export').href = FrameBackend.downloadUrl(job.id); $('download-export').hidden = false; $('download-credits').hidden = !job.credits; $('download-credits').href = job.credits ? FrameBackend.creditsUrl(job.id) : ''; $('download-credits').download = 'Frame-music-credits.txt'; $('start-export').textContent = 'Export again'; toast('Your MP4 is ready to download.'); } }
-  } catch (error) { exportBusy(false); updateExportCard({ status: 'error', stage: 'error', progress: $('export-progress').value, message: error.message }); }
+    if (job.status === 'rendering') { updateExportCard(job); pollTimer = setTimeout(() => poll(version), 500); }
+    else finishExport(job);
+  } catch (error) {
+    if (version !== pollVersion || id !== jobId) return;
+    if (error.status === 404) return finishExport({ status: 'error', progress: $('export-progress').value, message: 'Export no longer available', detail: 'The editor may have restarted. Your timeline is safe; retry the export.' });
+    pollFailures++;
+    updateExportCard({ ...lastExportJob, status: 'rendering', stage: lastRenderStage, progress: $('export-progress').value,
+      message: 'Reconnecting to your export…', detail: 'Rendering may still be running. Checking again automatically; keep this tab open.' });
+    pollTimer = setTimeout(() => poll(version), Math.min(10000, 1000 * 2 ** Math.min(pollFailures - 1, 4)));
+  }
 }
 $('export-form').onsubmit = async e => {
-  e.preventDefault(); if (jobId && !$('cancel-export').hidden) return;
+  e.preventDefault(); if (exportInFlight) return;
+  cancelRequested = false; jobId = null; pollFailures = 0; lastExportJob = null; lastRenderStage = 'engine';
+  pollVersion++; clearTimeout(pollTimer);
+  exportBusy(true);
+  $('download-export').hidden = true; $('download-credits').hidden = true;
+  // Capture the submitted timeline before any async validation or dialog close.
+  for (const key of ['resolution', 'fps', 'quality']) project.settings[key] = $(key).value;
+  save();
+  const submitted = JSON.parse(JSON.stringify(project));
+  startExportClock(Date.now());
+  updateExportCard({ status: 'rendering', stage: 'engine', progress: 0, message: 'Preparing your export…', detail: 'Checking your timeline and export settings.' });
   if ((project.textClips || []).some(clip => clip.text)) {
     const message = (project.textClips || []).some(clip => clip.text && clip.at >= total())
       ? 'A text clip starts after the video ends. Move it onto the video timeline before exporting.'
       : await api('/api/capabilities').then(features => features.timedTextExport ? '' : 'Restart Frame Studio before exporting text. The running server is out of date.').catch(() => 'Restart Frame Studio before exporting text. The running server is out of date.');
-    if (message) { exportStartedAt = 0; if ($('export-elapsed')) $('export-elapsed').textContent = '00:00'; updateExportCard({ status: 'error', stage: 'error', progress: 0, message }); toast(message); return; }
+    if (message) { finishExport({ status: 'error', stage: 'error', progress: 0, message }); return; }
   }
-  for (const key of ['resolution', 'fps', 'quality']) project.settings[key] = $(key).value;
-  save(); exportBusy(true); $('download-export').hidden = true; $('download-credits').hidden = true;
-  startExportClock(Date.now());
+  if (cancelRequested) { finishExport({ status: 'cancelled', progress: 0, message: 'Export cancelled', detail: 'Your timeline is unchanged. You can export again anytime.' }); return; }
   updateExportCard({
     status: 'rendering',
     stage: 'engine',
@@ -701,10 +772,28 @@ $('export-form').onsubmit = async e => {
     message: FrameBackend?.isBrowserMode?.() ? 'Loading Frame Studio video engine…' : 'Preparing your video',
     detail: FrameBackend?.isBrowserMode?.() ? 'Initializing private WebAssembly H.264 encoder…' : 'Starting native Frame Studio FFmpeg pipeline…'
   });
-  try { const result = await api('/api/exports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(project) }); jobId = result.id; clearTimeout(pollTimer); poll(); }
-  catch (error) { exportBusy(false); updateExportCard({ status: 'error', stage: 'error', progress: 0, message: error.message }); }
+  try {
+    const result = await api('/api/exports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(submitted) });
+    jobId = result.id;
+    if (cancelRequested) await cancelExport(); else poll();
+  } catch (error) { finishExport({ status: 'error', stage: 'error', progress: 0, message: error.message, detail: 'Check the connection and export settings, then retry. Your timeline is unchanged.' }); }
 };
-$('cancel-export').onclick = async () => { try { await api(`/api/exports/${jobId}`, { method: 'DELETE' }); clearTimeout(pollTimer); poll(); } catch (error) { toast(error.message); } };
+async function cancelExport() {
+  if (!exportInFlight) return;
+  cancelRequested = true; exportBusy(true);
+  updateExportCard({ ...lastExportJob, status: 'rendering', stage: lastRenderStage, progress: $('export-progress').value, message: 'Cancelling export…', detail: 'Waiting for the renderer to stop. Your timeline will be kept.' });
+  if (!jobId) return; // The submission will cancel as soon as its job ID arrives.
+  const version = ++pollVersion;
+  clearTimeout(pollTimer);
+  try {
+    await api(`/api/exports/${jobId}`, { method: 'DELETE', signal: AbortSignal.timeout(10000) });
+  } catch (error) {
+    cancelRequested = false; exportBusy(true);
+    toast('Could not confirm cancellation. Checking export status; you can try Cancel again.');
+  }
+  poll(version);
+}
+$('cancel-export').onclick = () => { if (!cancelRequested) cancelExport(); };
 document.addEventListener('keydown', e => {
   if (e.defaultPrevented || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) || document.querySelector('dialog[open]')) return;
   const command = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();

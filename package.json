@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node --test tests/editor.test.js tests/catalog.test.js",
+    "test": "node --test tests/editor.test.js tests/catalog.test.js tests/export-settings.test.js",
+    "test:export": "node tests/export-browser-check.js",
     "test:browser": "node tests/browser-check.js",
     "test:transition": "node tests/transition-browser-check.js",
     "test:music": "node tests/music-browser-check.js",
