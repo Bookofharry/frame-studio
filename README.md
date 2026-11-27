@@ -14,6 +14,8 @@ This repository includes an automated GitHub Actions workflow ([.github/workflow
 3. The **Deploy Frame Studio to GitHub Pages** workflow runs `npm test`, bundles `public/`, `hls.js`, generated black-screen media, and same-origin `ffmpeg.wasm` assets into `dist/`, and publishes the live editor at `https://<your-username>.github.io/<repo-name>/`.
 4. To build or verify the static GitHub Pages bundle locally, run `npm run build:pages` and `npm run test:pages`.
 
+The browser runtime is pinned in the npm lockfile and bundled as verified 1 MB parts. Interrupted transfers retry only the failed part; completed parts are cached when browser storage is available and reused after reload. A first export still needs a connection to download the engine. If loading fails, reconnect and retry Export. The local Desktop Studio uses native FFmpeg and does not need this browser runtime download.
+
 > **Browser Workspace notes:** In the hosted GitHub Pages version, media stays private inside the visitor's own browser storage (up to 512 MB per video and 150 MB per audio file; 720p/1080p clips work best within WebAssembly memory limits). All 11 bundled starter tracks work out of the box, and visitors can optionally connect their own Epidemic Sound API key in their browser's IndexedDB.
 
 ## Editing a video
@@ -77,6 +79,8 @@ Music edits and source references are included in automatic saving and **Save pr
 Videos and audio are copied into `data/media`; rendered exports are stored in `data/exports`, and saving to a chosen folder writes another copy there. Project snapshots are saved in this browser and store media IDs rather than embedding video files. Starting a new project creates a separate entry in **Projects** and clears the visible library and timeline without deleting source files used by earlier projects. Keep the `data` folder when moving or backing up the app; download project backups from **Projects** too. No video uploads to an external service are used. Imported media and exports remain until you remove them from the data folder while the app is stopped. Temporary export files are removed after rendering.
 
 ## Verification
+
+`npm run test:engine` checks a real WebAssembly H.264 export under the GitHub Pages subpath, including corrupt responses, a connection reset after HTTP 200, retry limits, resuming downloads after reload, cached engine loading with its network requests blocked, CDN failover, and unavailable browser cache storage. GitHub Actions runs this check before publishing Pages.
 
 `npm test` generates small video fixtures and checks importing, invalid input handling, cross-origin request blocking, and a real MP4 export with trim, speed, text, colors, mixed orientation, and audio/silent clips. It checks the output codec, resolution, duration, frame rate, and audio track. Test data uses an isolated temporary directory.
 

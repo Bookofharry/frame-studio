@@ -4,8 +4,6 @@
   const MAX_BROWSER_VIDEO_BYTES = 512 * 1024 * 1024;
   const MAX_BROWSER_AUDIO_BYTES = 150 * 1024 * 1024;
   const BLACK_MEDIA_ID = 'frame-black-screen-v1';
-  const FFMPEG_CDN = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd';
-  const FFMPEG_CORE_CDN = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
 
   let mode = null;
   let modePromise = null;
@@ -15,7 +13,6 @@
   const pendingCatalogAdds = new Map();
   const jobs = new Map();
   let blackPromise = null;
-  let ffmpegLoader = null;
 
   const makeError = (message, status = 400) => Object.assign(new Error(message), { status });
 
@@ -652,116 +649,6 @@
     return { clips, music, textClips, settings: { resolution, aspect, quality, fps, text, transitionDuration } };
   }
 
-  function loadScriptOnce(src) {
-    return new Promise((resolve, reject) => {
-      const existing = [...document.scripts].find(s => s.src === new URL(src, global.location.href).href);
-      if (existing && global.FFmpegWASM) return resolve();
-      const script = document.createElement('script');
-      script.src = src;
-      script.onload = () => resolve();
-      script.onerror = () => reject(new Error(`Failed to load ${src}`));
-      document.head.append(script);
-    });
-  }
-
-  let engineReady = false;
-  const engineProgressListeners = new Set();
-
-  function notifyEngineProgress(payload) {
-    for (const fn of engineProgressListeners) {
-      try { fn(payload); } catch {}
-    }
-  }
-
-  async function fetchBlobUrlWithProgress(url, mimeType, fallbackTotal = 0, onChunkProgress = null) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Could not fetch ${url}`);
-    const total = Number(res.headers.get('content-length')) || fallbackTotal || 0;
-    if (!res.body || typeof res.body.getReader !== 'function') {
-      const buf = await res.arrayBuffer();
-      if (onChunkProgress) onChunkProgress(buf.byteLength, total || buf.byteLength);
-      return URL.createObjectURL(new Blob([buf], { type: mimeType }));
-    }
-    const reader = res.body.getReader();
-    const chunks = [];
-    let loaded = 0;
-    let lastReport = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        chunks.push(value);
-        loaded += value.byteLength;
-        const now = Date.now();
-        if (onChunkProgress && (now - lastReport >= 60 || (total && loaded >= total))) {
-          lastReport = now;
-          onChunkProgress(loaded, total);
-        }
-      }
-    }
-    if (onChunkProgress) onChunkProgress(loaded, total || loaded);
-    return URL.createObjectURL(new Blob(chunks, { type: mimeType }));
-  }
-
-  async function ensureFFmpegClass(onProgress) {
-    if (engineReady && ffmpegLoader) return ffmpegLoader;
-    if (onProgress) engineProgressListeners.add(onProgress);
-    try {
-      if (!ffmpegLoader) {
-        ffmpegLoader = (async () => {
-          notifyEngineProgress({ progress: 2, message: 'Loading Frame Studio video engine…', detail: 'Connecting to WebAssembly H.264 runtime…' });
-          try {
-            const localCheck = await fetch('./vendor/ffmpeg/ffmpeg.js', { method: 'HEAD' });
-            if (localCheck.ok && !(localCheck.headers.get('content-type') || '').includes('text/html')) {
-              await loadScriptOnce('./vendor/ffmpeg/ffmpeg.js');
-              notifyEngineProgress({ progress: 3, message: 'Loading Frame Studio video engine…', detail: 'Preparing H.264 core module…' });
-              const base = new URL('./vendor/ffmpeg/', global.location.href).href;
-              const coreURL = await fetchBlobUrlWithProgress(`${base}ffmpeg-core.js`, 'text/javascript', 114674);
-              const wasmURL = await fetchBlobUrlWithProgress(`${base}ffmpeg-core.wasm`, 'application/wasm', 32232419, (loaded, total) => {
-                const denom = Math.max(loaded, total || 32232419);
-                const pct = 4 + Math.round(10 * Math.min(1, loaded / denom));
-                const mbLoaded = (loaded / 1048576).toFixed(1);
-                const mbTotal = (denom / 1048576).toFixed(1);
-                notifyEngineProgress({
-                  progress: pct,
-                  message: 'Loading Frame Studio video engine…',
-                  detail: `${mbLoaded} / ${mbTotal} MB downloaded · Cached after first export`
-                });
-              });
-              engineReady = true;
-              return { FFmpeg: global.FFmpegWASM.FFmpeg, loadConfig: { coreURL, wasmURL } };
-            }
-          } catch {}
-          await loadScriptOnce(`${FFMPEG_CDN}/ffmpeg.js`);
-          const workerCode = await (await fetch(`${FFMPEG_CDN}/814.ffmpeg.js`)).text();
-          const patchedWorker = workerCode.replace(/importScripts\(([^)]+)\)/g, (match) => match);
-          const classWorkerURL = URL.createObjectURL(new Blob([`self.__webpack_public_path__ = "${FFMPEG_CDN}/";\n${patchedWorker}`], { type: 'text/javascript' }));
-          const coreURL = await fetchBlobUrlWithProgress(`${FFMPEG_CORE_CDN}/ffmpeg-core.js`, 'text/javascript', 114674);
-          const wasmURL = await fetchBlobUrlWithProgress(`${FFMPEG_CORE_CDN}/ffmpeg-core.wasm`, 'application/wasm', 32232419, (loaded, total) => {
-            const denom = Math.max(loaded, total || 32232419);
-            const pct = 4 + Math.round(10 * Math.min(1, loaded / denom));
-            const mbLoaded = (loaded / 1048576).toFixed(1);
-            const mbTotal = (denom / 1048576).toFixed(1);
-            notifyEngineProgress({
-              progress: pct,
-              message: 'Loading Frame Studio video engine…',
-              detail: `${mbLoaded} / ${mbTotal} MB downloaded · Cached after first export`
-            });
-          });
-          engineReady = true;
-          return { FFmpeg: global.FFmpegWASM.FFmpeg, loadConfig: { classWorkerURL, coreURL, wasmURL } };
-        })().catch(error => {
-          ffmpegLoader = null;
-          engineReady = false;
-          throw error;
-        });
-      }
-      return await ffmpegLoader;
-    } finally {
-      if (onProgress) engineProgressListeners.delete(onProgress);
-    }
-  }
-
   async function renderTextOverlayPng(clip, frameW, frameH) {
     const sizeRatio = clip.size ?? 0.045;
     const sizePx = Math.max(12, Math.round(frameH * sizeRatio));
@@ -845,7 +732,7 @@
       job.detail = `${activeStage.label ? `${activeStage.label} · ` : ''}Encoded ${formatRenderTime(clamped)} of ${formatRenderTime(activeStage.duration)} · ${w}×${h} H.264`;
     };
     try {
-      if (engineReady) {
+      if (global.FrameFFmpegLoader.ready) {
         job.progress = Math.max(job.progress, 12);
         job.message = 'Frame Studio engine ready';
         job.detail = 'Using cached WebAssembly H.264 runtime';
@@ -854,7 +741,7 @@
         job.message = 'Loading Frame Studio video engine…';
         job.detail = 'Preparing private in-browser H.264 encoder (cached after first use)…';
       }
-      const engine = await ensureFFmpegClass(update => {
+      const engine = await global.FrameFFmpegLoader.prepare(update => {
         if (job.status !== 'rendering') return;
         job.stage = 'engine';
         if (update.progress) job.progress = Math.max(job.progress, update.progress);
@@ -881,7 +768,17 @@
           reportEncodeTime(seconds);
         }
       });
-      await ffmpeg.load(engine.loadConfig);
+      const startup = new AbortController();
+      const startupTimeout = setTimeout(() => startup.abort(), 60000);
+      try {
+        await ffmpeg.load(engine.loadConfig, { signal: startup.signal });
+      } catch (error) {
+        global.FrameFFmpegLoader.invalidate();
+        console.error('Frame video engine initialization failed:', error);
+        throw makeError('The video engine could not start. Retry Export to reload it.', 503);
+      } finally {
+        clearTimeout(startupTimeout);
+      }
       if (job.status === 'cancelled') return;
 
       const execStage = async (args, duration, startPct = 0, spanPct = 0, label = '') => {
@@ -1076,7 +973,7 @@
         job.stage = 'error';
         job.status = 'error';
         job.message = error.status ? error.message : 'Browser export failed. Try 720p resolution or smaller source clips.';
-        job.detail = 'Frame Studio render stopped · Adjust output settings and try again';
+        job.detail = error.status === 503 ? 'Video engine unavailable · Retry Export when connected' : 'Frame Studio render stopped · Adjust output settings and try again';
         console.error(error);
       }
     } finally {

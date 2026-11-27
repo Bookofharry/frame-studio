@@ -14,7 +14,8 @@
     "test:catalog": "node tests/catalog-browser-check.js",
     "test:pages": "node tests/pages-browser-check.js",
     "build:pages": "node scripts/build-pages.js",
-    "catalog:rebuild": "node scripts/build-audio-catalog.js"
+    "catalog:rebuild": "node scripts/build-audio-catalog.js",
+    "test:engine": "node tests/ffmpeg-browser-check.js"
   },
   "dependencies": {
     "express": "^5.1.0",
@@ -24,6 +25,8 @@
     "multer": "^2.0.2"
   },
   "devDependencies": {
+    "@ffmpeg/core": "0.12.10",
+    "@ffmpeg/ffmpeg": "0.12.10",
     "playwright": "^1.56.0"
   }
 }

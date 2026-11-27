@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const ffmpeg = require('ffmpeg-static');
 
@@ -46,19 +47,36 @@ execFileSync(ffmpeg, [
 ], { stdio: 'inherit' });
 
 const ffmpegUmdDir = path.join(root, 'node_modules/@ffmpeg/ffmpeg/dist/umd');
-const coreUmdDir = path.join(root, 'node_modules/@ffmpeg/core/dist/umd');
-let bundledWasm = false;
-if (fs.existsSync(ffmpegUmdDir) && fs.existsSync(coreUmdDir)) {
-  const targetFfmpegDir = path.join(vendorDir, 'ffmpeg');
-  fs.mkdirSync(targetFfmpegDir, { recursive: true });
-  for (const dir of [ffmpegUmdDir, coreUmdDir]) {
-    for (const entry of fs.readdirSync(dir)) {
-      fs.copyFileSync(path.join(dir, entry), path.join(targetFfmpegDir, entry));
-    }
-  }
-  bundledWasm = true;
+// An explicit classWorkerURL creates a module worker in @ffmpeg/ffmpeg.
+// Its core must therefore export the ESM factory (UMD has no default export).
+const coreEsmDir = path.join(root, 'node_modules/@ffmpeg/core/dist/esm');
+if (!fs.existsSync(ffmpegUmdDir) || !fs.existsSync(coreEsmDir)) {
+  throw new Error('Missing pinned FFmpeg browser dependencies. Run npm ci before building Pages.');
 }
+const targetFfmpegDir = path.join(vendorDir, 'ffmpeg');
+fs.mkdirSync(targetFfmpegDir, { recursive: true });
+const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+const manifest = { version: 1, assets: {}, parts: [] };
+for (const [name, dir] of [['ffmpeg.js', ffmpegUmdDir], ['814.ffmpeg.js', ffmpegUmdDir], ['ffmpeg-core.js', coreEsmDir]]) {
+  const bytes = fs.readFileSync(path.join(dir, name));
+  const hash = sha256(bytes);
+  const file = `${hash}-${name}`;
+  fs.writeFileSync(path.join(targetFfmpegDir, file), bytes);
+  manifest.assets[name] = { file, size: bytes.length, sha256: hash };
+}
+const wasm = fs.readFileSync(path.join(coreEsmDir, 'ffmpeg-core.wasm'));
+if (!WebAssembly.validate(wasm)) throw new Error('FFmpeg WebAssembly is incomplete or invalid. Reinstall dependencies.');
+manifest.size = wasm.length;
+// Small static files work on Pages without relying on HTTP Range support.
+for (let offset = 0; offset < wasm.length; offset += 1024 * 1024) {
+  const bytes = wasm.subarray(offset, offset + 1024 * 1024);
+  const hash = sha256(bytes);
+  const file = `ffmpeg-core-${hash}.bin`;
+  fs.writeFileSync(path.join(targetFfmpegDir, file), bytes);
+  manifest.parts.push({ file, size: bytes.length, sha256: hash });
+}
+fs.writeFileSync(path.join(targetFfmpegDir, 'runtime.json'), JSON.stringify(manifest));
 
 fs.writeFileSync(path.join(distDir, '.nojekyll'), '');
 
-console.log(`Built static GitHub Pages bundle in ${distDir} (same-origin ffmpeg.wasm bundled: ${bundledWasm ? 'yes' : 'cdn-fallback'})`);
+console.log(`Built static GitHub Pages bundle in ${distDir} (FFmpeg bundled in ${manifest.parts.length} retryable parts)`);
